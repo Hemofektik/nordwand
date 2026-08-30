@@ -1,0 +1,14 @@
+import { defineConfig } from "vite";
+
+export default defineConfig({
+    publicDir: "public",
+    build: {
+        outDir: "dist",
+        emptyOutDir: true,
+        sourcemap: true,
+    },
+    server: {
+        port: 8000,
+        strictPort: true,
+    },
+});

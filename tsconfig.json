@@ -1,25 +1,56 @@
 {
 	"compilerOptions": {
-		"sourceMap": true,
-		"target": "ES2019",
-		"jsx": "react",
-		"allowJs": false,
+		"target": "ES2024",
+		"lib": [
+			"ES2024",
+			"DOM",
+			"DOM.Iterable"
+		],
 		"module": "esnext",
-		"moduleResolution": "node",
-		"experimentalDecorators": true,
+		"moduleResolution": "bundler",
+		"moduleDetection": "force",
+		"verbatimModuleSyntax": true,
+		"isolatedModules": true,
+		"erasableSyntaxOnly": true,
+		"allowImportingTsExtensions": true,
+		"noEmit": true,
+		"libReplacement": false,
+		"stableTypeOrdering": true,
+		"strict": true,
+		"noImplicitAny": true,
+		"noImplicitThis": true,
+		"strictNullChecks": true,
 		"strictBindCallApply": true,
 		"strictFunctionTypes": true,
 		"strictPropertyInitialization": true,
-		"strictNullChecks": true,
+		"useUnknownInCatchVariables": true,
+		"noUncheckedIndexedAccess": true,
+		"noImplicitOverride": true,
+		"noPropertyAccessFromIndexSignature": true,
+		"exactOptionalPropertyTypes": true,
 		"noFallthroughCasesInSwitch": true,
-		"noImplicitAny": true,
 		"noImplicitReturns": true,
 		"noUnusedLocals": true,
-		"noImplicitThis": true,
-		"noUnusedParameters": false,
-		"preserveConstEnums": true,
+		"noUnusedParameters": true,
+		"allowUnreachableCode": false,
+		"allowUnusedLabels": false,
+		"forceConsistentCasingInFileNames": true,
+		"noUncheckedSideEffectImports": true,
+		"skipLibCheck": true,
 		"resolveJsonModule": true,
-		"esModuleInterop": true
+		"esModuleInterop": true,
+		"sourceMap": true,
+		"types": [
+			"vite/client"
+		]
 	},
-	"exclude": ["node_modules", "cypress", "packages/**/cypress/**", "packages/**/cypress.config.ts"]
+	"include": [
+		"src/**/*.ts",
+		"vite.config.ts"
+	],
+	"exclude": [
+		"node_modules",
+		"dist",
+		"game"
+	]
 }
