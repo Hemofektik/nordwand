@@ -35,5 +35,6 @@ export class Player {
 
     public letGo(): void {
         this.skeleton.letGo();
+        this.climbingAI.stopClimbing();
     }
 }

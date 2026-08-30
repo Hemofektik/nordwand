@@ -44,7 +44,7 @@ Every wall is generated from a noisy walk of segments, then studded with anchors
 
 Distance springs keep limbs the right length. Angular constraints hold posture. Gravity pulls at 80 units. If you let go, there is nothing left but the rope and the fall.
 
-The climbing AI cycles through **raise** (flex a planted arm, extend a planted leg) and **reach** (look for the next hold within arm or leg length). It is unfinished on purpose — the Reach step still has TODOs — which is part of why the prototype still feels like a north face: you can see the route, but the last meters are not solved.
+The climbing AI cycles through **raise** (flex a planted arm, extend a planted leg) and **reach** (free hand and free foot grab the next reachable anchors). Limbs leapfrog: after a grab, the lower hold is released so the next move can start.
 
 ## Project
 

@@ -1,6 +1,6 @@
 import type { Camera } from "./Camera.ts";
-import type { SpringPhysics } from "./Physics.ts";
-import type { Wall } from "./Wall.ts";
+import type { FixedConstraint, PhysicalParticleState, SpringPhysics } from "./Physics.ts";
+import type { Wall, WallAnchor } from "./Wall.ts";
 import { defined } from "./assert.ts";
 
 function drawDebugLine(
@@ -126,27 +126,53 @@ export class Skeleton {
     }
 
     public letGo(): void {
-        const leftHand = defined(
-            this.phys.fixedConstraints[defined(this.handGrabConstraintIndex[0], "Missing left hand grab")],
-            "Missing left hand grab constraint",
-        );
-        const rightHand = defined(
-            this.phys.fixedConstraints[defined(this.handGrabConstraintIndex[1], "Missing right hand grab")],
-            "Missing right hand grab constraint",
-        );
-        const leftFoot = defined(
-            this.phys.fixedConstraints[defined(this.footGrabConstraintIndex[0], "Missing left foot grab")],
-            "Missing left foot grab constraint",
-        );
-        const rightFoot = defined(
-            this.phys.fixedConstraints[defined(this.footGrabConstraintIndex[1], "Missing right foot grab")],
-            "Missing right foot grab constraint",
-        );
+        this.release("hand", 0);
+        this.release("hand", 1);
+        this.release("foot", 0);
+        this.release("foot", 1);
+    }
 
-        leftHand.isEnabled = false;
-        rightHand.isEnabled = false;
-        leftFoot.isEnabled = false;
-        rightFoot.isEnabled = false;
+    public isGrabbing(kind: "hand" | "foot", sideIndex: number): boolean {
+        return this.grabConstraint(kind, sideIndex).isEnabled;
+    }
+
+    public findFreeSide(kind: "hand" | "foot"): number {
+        for (let side = 0; side < 2; side++) {
+            if (!this.isGrabbing(kind, side)) {
+                return side;
+            }
+        }
+        return -1;
+    }
+
+    public grab(kind: "hand" | "foot", sideIndex: number, anchor: WallAnchor): void {
+        const constraint = this.grabConstraint(kind, sideIndex);
+        constraint.posX = anchor.posX;
+        constraint.posY = anchor.posY;
+        constraint.wallAnchorIndex = anchor.index;
+        constraint.isEnabled = true;
+
+        const particle = this.limbParticle(kind, sideIndex);
+        particle.posX = anchor.posX;
+        particle.posY = anchor.posY;
+        particle.velX = 0;
+        particle.velY = 0;
+    }
+
+    public release(kind: "hand" | "foot", sideIndex: number): void {
+        this.grabConstraint(kind, sideIndex).isEnabled = false;
+    }
+
+    public grabConstraint(kind: "hand" | "foot", sideIndex: number): FixedConstraint {
+        const indices = kind === "hand" ? this.handGrabConstraintIndex : this.footGrabConstraintIndex;
+        const constraintIndex = defined(indices[sideIndex], `Missing ${kind} grab`);
+        return defined(this.phys.fixedConstraints[constraintIndex], `Missing ${kind} grab constraint`);
+    }
+
+    public limbParticle(kind: "hand" | "foot", sideIndex: number): PhysicalParticleState {
+        const indices = kind === "hand" ? this.handParticleIndex : this.footParticleIndex;
+        const particleIndex = defined(indices[sideIndex], `Missing ${kind} particle`);
+        return defined(this.phys.particleStates[particleIndex], `Missing ${kind} particle state`);
     }
 
     private initialize(posX: number, posY: number): void {
