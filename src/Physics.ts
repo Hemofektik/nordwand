@@ -1,3 +1,5 @@
+import type { Wall } from "./Wall.ts";
+
 export class PhysicalParticleState {
     public posX = 0;
     public posY = 0;
@@ -219,6 +221,7 @@ export class SpringPhysics {
 
     public time = 0.0;
     public timeAccumulator = 0.0;
+    public wall: Wall | undefined;
 
     public createParticle(posX: number, posY: number): number {
         const pps = new PhysicalParticleState();
@@ -333,6 +336,26 @@ export class SpringPhysics {
             integrateAngularConstraint(c, this.particleStates, deltaTime);
         }
 
+        this.applyFixedConstraints();
+
+        for (const state of this.particleStates) {
+            state.posX += deltaTime * state.velX;
+            state.posY += deltaTime * state.velY;
+        }
+
+        if (this.wall !== undefined) {
+            for (const state of this.particleStates) {
+                this.wall.collideParticle(state);
+            }
+            this.applyFixedConstraints();
+        }
+
+        if (this.time < 1.0) {
+            this.cancelVelocities();
+        }
+    }
+
+    public applyFixedConstraints(): void {
         for (const c of this.fixedConstraints) {
             if (!c.isEnabled) {
                 continue;
@@ -347,15 +370,6 @@ export class SpringPhysics {
             state.posY = c.posY;
             state.velX = 0;
             state.velY = 0;
-        }
-
-        for (const state of this.particleStates) {
-            state.posX += deltaTime * state.velX;
-            state.posY += deltaTime * state.velY;
-        }
-
-        if (this.time < 1.0) {
-            this.cancelVelocities();
         }
     }
 

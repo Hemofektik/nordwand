@@ -122,8 +122,8 @@ function boneLengths(skeleton: Skeleton, kind: LimbKind, sideIndex: number): { p
                 ? skeleton.leftArmConstraintIndices
                 : skeleton.rightArmConstraintIndices
             : sideIndex === 0
-              ? skeleton.leftLegConstraintIndices
-              : skeleton.rightLegConstraintIndices;
+                ? skeleton.leftLegConstraintIndices
+                : skeleton.rightLegConstraintIndices;
 
     const proximal = defined(
         skeleton.phys.distanceConstraints[defined(constraintIndices[0], `Missing ${kind} proximal constraint`)],
@@ -157,19 +157,19 @@ function aimLimbToward(
 
     const proximalConstraint = defined(
         skeleton.phys.angularConstraints[
-            defined(
-                kind === "hand" ? skeleton.shoulderACIndex[sideIndex] : skeleton.hipJointACIndex[sideIndex],
-                `Missing ${kind} proximal joint`,
-            )
+        defined(
+            kind === "hand" ? skeleton.shoulderACIndex[sideIndex] : skeleton.hipJointACIndex[sideIndex],
+            `Missing ${kind} proximal joint`,
+        )
         ],
         `Missing ${kind} proximal angular constraint`,
     );
     const distalConstraint = defined(
         skeleton.phys.angularConstraints[
-            defined(
-                kind === "hand" ? skeleton.elbowACIndex[sideIndex] : skeleton.kneeJointACIndex[sideIndex],
-                `Missing ${kind} distal joint`,
-            )
+        defined(
+            kind === "hand" ? skeleton.elbowACIndex[sideIndex] : skeleton.kneeJointACIndex[sideIndex],
+            `Missing ${kind} distal joint`,
+        )
         ],
         `Missing ${kind} distal angular constraint`,
     );
@@ -223,7 +223,7 @@ export class ClimbingAI {
         this.targetFootAnchorIndex = -1;
     }
 
-    public draw(_ctx: CanvasRenderingContext2D, _cam: Camera): void {}
+    public draw(_ctx: CanvasRenderingContext2D, _cam: Camera): void { }
 
     public updateRaise(deltaTime: number): void {
         let raised = false;

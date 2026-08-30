@@ -42,7 +42,7 @@ Every wall is generated from a noisy walk of segments, then studded with anchors
 - **Grabs** — hands and feet pinned to wall anchors
 - **Rope** — a Bresenham pixel line from the wall down to the pelvis
 
-Distance springs keep limbs the right length. Angular constraints hold posture. Gravity pulls at 80 units. If you let go, there is nothing left but the rope and the fall.
+Distance springs keep limbs the right length. Angular constraints hold posture. Gravity pulls at 80 units. The climber and rope collide with the rock — they stay on the air side of the wall. If you let go, there is nothing left but the rope and the fall.
 
 The climbing AI cycles through **raise** (flex a planted arm, extend a planted leg) and **reach** (free hand and free foot grab the next reachable anchors). Limbs leapfrog: after a grab, the lower hold is released so the next move can start.
 

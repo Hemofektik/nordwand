@@ -1,4 +1,5 @@
 import type { Camera } from "./Camera.ts";
+import type { PhysicalParticleState } from "./Physics.ts";
 
 let noiseIndex = 0;
 
@@ -131,6 +132,48 @@ export class Wall {
             }
         }
         return result;
+    }
+
+    public wallXAtY(posY: number): number | undefined {
+        let wallX: number | undefined;
+        for (let n = 0; n < this.wallSegments.length - 1; n++) {
+            const ws0 = this.wallSegments[n];
+            const ws1 = this.wallSegments[n + 1];
+            if (ws0 === undefined || ws1 === undefined) {
+                continue;
+            }
+
+            const minY = Math.min(ws0.posY, ws1.posY);
+            const maxY = Math.max(ws0.posY, ws1.posY);
+            if (posY < minY || posY > maxY) {
+                continue;
+            }
+
+            const deltaY = ws1.posY - ws0.posY;
+            const t = Math.abs(deltaY) < 0.0001 ? 0 : (posY - ws0.posY) / deltaY;
+            const x = ws0.posX + t * (ws1.posX - ws0.posX);
+            wallX = wallX === undefined ? x : Math.min(wallX, x);
+        }
+        return wallX;
+    }
+
+    public collideParticle(state: PhysicalParticleState, skin = 1): boolean {
+        const wallX = this.wallXAtY(state.posY);
+        if (wallX === undefined) {
+            return false;
+        }
+
+        const surfaceX = wallX - skin;
+        if (state.posX <= surfaceX) {
+            return false;
+        }
+
+        state.posX = surfaceX;
+        if (state.velX > 0) {
+            state.velX = 0;
+        }
+        state.velY *= 0.85;
+        return true;
     }
 
     private initialize(initialPosX: number, initialPosY: number): void {
