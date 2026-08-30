@@ -35,7 +35,7 @@ Then open [http://localhost:8000](http://localhost:8000). The canvas is 560×840
 
 ## How it feels
 
-Every wall is generated from a noisy walk of segments, then studded with anchors. The climber is not a sprite with a jump button — they are a chain of particles:
+Every wall is generated from a noisy walk of segments, then studded with anchors. The face keeps growing above the climber, so the route never ends. The camera eases after the body. The climber is not a sprite with a jump button — they are a chain of particles:
 
 - **Body** — pelvis, back, neck, head
 - **Arms and legs** — elbows, wrists, knees, ankles

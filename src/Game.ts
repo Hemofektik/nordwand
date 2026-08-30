@@ -173,6 +173,7 @@ export class Game {
         this.wall = new Wall(posX, posY);
         this.phys.wall = this.wall;
         this.player = new Player(this.phys, this.wall, posX, posY);
+        this.snapCameraToPlayer();
 
         this.won = false;
         this.clear_msgs();
@@ -182,13 +183,6 @@ export class Game {
         for (let k = 0; k < 255; k++) {
             this.keys.push(false);
         }
-
-        if (this.cam.x === 0 && this.cam.y === 0) {
-            this.cam.x = this.level_width / 2;
-            this.cam.y = this.level_width / 2;
-        }
-        this.cam.x_target = this.cam.x;
-        this.cam.y_target = this.cam.y;
     }
 
     public resetPhysics(): void {
@@ -368,13 +362,15 @@ export class Game {
         this.ctx.fill();
 
         this.handleInput(this.frame_delta_smoothed);
-        this.cam.update(140, 210, this.frame_delta);
 
         if (!this.paused && this.wall && this.phys && this.player) {
+            this.extendWallAhead();
             this.wall.update(this.frame_delta);
             this.phys.update(this.frame_delta);
             this.player.update(this.frame_delta);
         }
+
+        this.followPlayerWithCamera();
 
         this.wall?.draw(this.ctx, this.cam);
         this.player?.draw(this.ctx, this.cam);
@@ -396,6 +392,44 @@ export class Game {
         if (this.keys[KEY_D] === true || this.keys[KEY_RIGHT] === true) {
             this.player.addBowOffset(-bowStrength * deltaTime);
         }
+    }
+
+    private playerPelvis(): { posX: number; posY: number } | undefined {
+        const player = this.player;
+        if (player === undefined) {
+            return undefined;
+        }
+        return player.skeleton.phys.particleStates[player.skeleton.pelvisParticleIndex];
+    }
+
+    private snapCameraToPlayer(): void {
+        const pelvis = this.playerPelvis();
+        if (pelvis === undefined) {
+            return;
+        }
+        this.cam.x = pelvis.posX;
+        this.cam.y = pelvis.posY;
+        this.cam.x_target = pelvis.posX;
+        this.cam.y_target = pelvis.posY;
+    }
+
+    private followPlayerWithCamera(): void {
+        const pelvis = this.playerPelvis();
+        if (pelvis === undefined) {
+            return;
+        }
+        this.cam.update(pelvis.posX, pelvis.posY, this.frame_delta);
+    }
+
+    private extendWallAhead(): void {
+        const wall = this.wall;
+        const pelvis = this.playerPelvis();
+        if (wall === undefined || pelvis === undefined) {
+            return;
+        }
+
+        const viewTop = this.cam.viewport_to_world_y(0);
+        wall.ensureGeneratedTo(Math.min(pelvis.posY, viewTop) - 600);
     }
 
     private readMousePoint(ev: MouseEvent): { _x: number; _y: number } {

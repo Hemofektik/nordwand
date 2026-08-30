@@ -69,9 +69,18 @@ function drawDebugWallAnchor(ctx: CanvasRenderingContext2D, cam: Camera, wa: Wal
     ctx.fill();
 }
 
+const SEGMENT_LENGTH = 40.0;
+const WALL_VARIATION_BAND_WIDTH = 100;
+const INITIAL_SEGMENT_COUNT = 32;
+const MAX_SEGMENTS_PER_EXTEND = 64;
+
 export class Wall {
     public wallSegments: WallSegment[] = [];
     public wallAnchors: WallAnchor[] = [];
+    private originX = 0;
+    private cursorX = 0;
+    private cursorY = 0;
+    private segmentDirRad = -Math.PI * 0.5;
 
     public constructor(posX: number, posY: number) {
         this.initialize(posX, posY);
@@ -79,17 +88,36 @@ export class Wall {
 
     public update(_deltaTime: number): void { }
 
+    public ensureGeneratedTo(minY: number): void {
+        for (let n = 0; n < MAX_SEGMENTS_PER_EXTEND; n++) {
+            const last = this.wallSegments[this.wallSegments.length - 1];
+            if (last === undefined || last.posY <= minY) {
+                return;
+            }
+            this.appendSegment();
+        }
+    }
+
     public draw(ctx: CanvasRenderingContext2D, cam: Camera): void {
+        const viewTop = cam.viewport_to_world_y(0) - SEGMENT_LENGTH;
+        const viewBottom = cam.viewport_to_world_y(cam.canvas.height) + SEGMENT_LENGTH;
+
         for (let n = 0; n < this.wallSegments.length - 1; n++) {
             const ws0 = this.wallSegments[n + 0];
             const ws1 = this.wallSegments[n + 1];
             if (ws0 === undefined || ws1 === undefined) {
                 continue;
             }
+            if (Math.max(ws0.posY, ws1.posY) < viewTop || Math.min(ws0.posY, ws1.posY) > viewBottom) {
+                continue;
+            }
             drawDebugLineWall(ctx, cam, ws0.posX, ws0.posY, ws1.posX, ws1.posY, "#303335");
         }
 
         for (const wa of this.wallAnchors) {
+            if (wa.posY < viewTop || wa.posY > viewBottom) {
+                continue;
+            }
             drawDebugWallAnchor(ctx, cam, wa, "#FF0000");
         }
     }
@@ -135,26 +163,40 @@ export class Wall {
     }
 
     public wallXAtY(posY: number): number | undefined {
-        let wallX: number | undefined;
-        for (let n = 0; n < this.wallSegments.length - 1; n++) {
-            const ws0 = this.wallSegments[n];
-            const ws1 = this.wallSegments[n + 1];
+        const first = this.wallSegments[0];
+        const last = this.wallSegments[this.wallSegments.length - 1];
+        if (first === undefined || last === undefined || this.wallSegments.length < 2) {
+            return undefined;
+        }
+        if (posY > first.posY || posY < last.posY) {
+            return undefined;
+        }
+
+        let lo = 0;
+        let hi = this.wallSegments.length - 2;
+        while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+            const ws0 = this.wallSegments[mid];
+            const ws1 = this.wallSegments[mid + 1];
             if (ws0 === undefined || ws1 === undefined) {
-                continue;
+                return undefined;
             }
 
-            const minY = Math.min(ws0.posY, ws1.posY);
-            const maxY = Math.max(ws0.posY, ws1.posY);
-            if (posY < minY || posY > maxY) {
+            if (posY > ws0.posY) {
+                hi = mid - 1;
+                continue;
+            }
+            if (posY < ws1.posY) {
+                lo = mid + 1;
                 continue;
             }
 
             const deltaY = ws1.posY - ws0.posY;
             const t = Math.abs(deltaY) < 0.0001 ? 0 : (posY - ws0.posY) / deltaY;
-            const x = ws0.posX + t * (ws1.posX - ws0.posX);
-            wallX = wallX === undefined ? x : Math.min(wallX, x);
+            return ws0.posX + t * (ws1.posX - ws0.posX);
         }
-        return wallX;
+
+        return undefined;
     }
 
     public collideParticle(state: PhysicalParticleState, skin = 1): boolean {
@@ -177,43 +219,42 @@ export class Wall {
     }
 
     private initialize(initialPosX: number, initialPosY: number): void {
-        const numParticles = 32;
-        let posX = initialPosX + 45;
-        let posY = initialPosY + 300;
+        this.originX = initialPosX;
+        this.cursorX = initialPosX + 45;
+        this.cursorY = initialPosY + 300;
+        this.segmentDirRad = -Math.PI * 0.5;
 
-        const wallVariationBandWidth = 100;
-        const halfWallVariationBandWidth = wallVariationBandWidth * 0.5;
-        const segmentLength = 40.0;
-        let segmentDirRad = -Math.PI * 0.5;
+        for (let n = 0; n < INITIAL_SEGMENT_COUNT - 1; n++) {
+            this.appendSegment();
+        }
+    }
 
-        for (let x = 0; x < numParticles - 1; x++) {
-            const ws = new WallSegment();
-            const variationDir = (initialPosX - posX) / halfWallVariationBandWidth;
-            const variationStrength = Math.max(0.0, 1.0 - Math.abs(variationDir));
+    private appendSegment(): void {
+        const halfWallVariationBandWidth = WALL_VARIATION_BAND_WIDTH * 0.5;
+        const variationDir = (this.originX - this.cursorX) / halfWallVariationBandWidth;
+        const variationStrength = Math.max(0.0, 1.0 - Math.abs(variationDir));
 
-            let dirRadOffset = 0.0;
-            dirRadOffset += (randF() - 0.5) * variationStrength * Math.PI * 1.0;
-            dirRadOffset += variationDir * Math.PI * 0.2;
+        let dirRadOffset = 0.0;
+        dirRadOffset += (randF() - 0.5) * variationStrength * Math.PI * 1.0;
+        dirRadOffset += variationDir * Math.PI * 0.2;
 
-            if (segmentDirRad + dirRadOffset > -Math.PI * 0.1) {
-                dirRadOffset = -Math.abs(dirRadOffset);
-            } else if (segmentDirRad + dirRadOffset < -Math.PI * 0.9) {
-                dirRadOffset = Math.abs(dirRadOffset);
-            }
-
-            segmentDirRad += dirRadOffset;
-            const segmentDirX = Math.cos(segmentDirRad);
-            const segmentDirY = Math.sin(segmentDirRad);
-
-            posX += segmentDirX * segmentLength;
-            posY += segmentDirY * segmentLength;
-            ws.posX = posX;
-            ws.posY = posY;
-            this.wallSegments.push(ws);
+        if (this.segmentDirRad + dirRadOffset > -Math.PI * 0.1) {
+            dirRadOffset = -Math.abs(dirRadOffset);
+        } else if (this.segmentDirRad + dirRadOffset < -Math.PI * 0.9) {
+            dirRadOffset = Math.abs(dirRadOffset);
         }
 
-        for (let n = 0; n < this.wallSegments.length - 1; n++) {
-            this.addAnchor(n);
+        this.segmentDirRad += dirRadOffset;
+        this.cursorX += Math.cos(this.segmentDirRad) * SEGMENT_LENGTH;
+        this.cursorY += Math.sin(this.segmentDirRad) * SEGMENT_LENGTH;
+
+        const ws = new WallSegment();
+        ws.posX = this.cursorX;
+        ws.posY = this.cursorY;
+        this.wallSegments.push(ws);
+
+        if (this.wallSegments.length >= 2) {
+            this.addAnchor(this.wallSegments.length - 2);
         }
     }
 }

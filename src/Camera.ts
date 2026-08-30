@@ -1,6 +1,6 @@
 export class Camera {
     public readonly scale_smoothness = 10.0;
-    public readonly move_smoothness = 10.0;
+    public readonly move_smoothness = 1.25;
 
     public canvas: HTMLCanvasElement;
     public x = 0;
