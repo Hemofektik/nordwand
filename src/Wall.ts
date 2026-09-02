@@ -69,7 +69,11 @@ function drawDebugWallAnchor(ctx: CanvasRenderingContext2D, cam: Camera, wa: Wal
     ctx.fill();
 }
 
-const SEGMENT_LENGTH = 40.0;
+const BASE_SEGMENT_LENGTH = 40.0;
+const VERTEX_FREQUENCY_SCALE = 3;
+const ANCHOR_FREQUENCY_SCALE = 2;
+const ANCHOR_DISTANCE = 10.0 / ANCHOR_FREQUENCY_SCALE;
+const HIGH_FREQUENCY_AMPLITUDE = BASE_SEGMENT_LENGTH / VERTEX_FREQUENCY_SCALE;
 const WALL_VARIATION_BAND_WIDTH = 100;
 const INITIAL_SEGMENT_COUNT = 32;
 const MAX_SEGMENTS_PER_EXTEND = 64;
@@ -99,8 +103,8 @@ export class Wall {
     }
 
     public draw(ctx: CanvasRenderingContext2D, cam: Camera): void {
-        const viewTop = cam.viewport_to_world_y(0) - SEGMENT_LENGTH;
-        const viewBottom = cam.viewport_to_world_y(cam.canvas.height) + SEGMENT_LENGTH;
+        const viewTop = cam.viewport_to_world_y(0) - BASE_SEGMENT_LENGTH;
+        const viewBottom = cam.viewport_to_world_y(cam.canvas.height) + BASE_SEGMENT_LENGTH;
 
         for (let n = 0; n < this.wallSegments.length - 1; n++) {
             const ws0 = this.wallSegments[n + 0];
@@ -123,7 +127,6 @@ export class Wall {
     }
 
     public addAnchor(segmentIndex: number): void {
-        const anchorDistance = 10.0;
         const ws0 = this.wallSegments[segmentIndex + 0];
         const ws1 = this.wallSegments[segmentIndex + 1];
         if (ws0 === undefined || ws1 === undefined) {
@@ -139,11 +142,11 @@ export class Wall {
 
         const dirX = deltaX / dirLength;
         const dirY = deltaY / dirLength;
-        const numAnchors = dirLength / anchorDistance;
+        const numAnchors = dirLength / ANCHOR_DISTANCE;
         for (let n = 0; n < numAnchors; n++) {
             const wa = new WallAnchor();
-            wa.posX = ws0.posX + dirX * n * anchorDistance;
-            wa.posY = ws0.posY + dirY * n * anchorDistance;
+            wa.posX = ws0.posX + dirX * n * ANCHOR_DISTANCE;
+            wa.posY = ws0.posY + dirY * n * ANCHOR_DISTANCE;
             wa.index = this.wallAnchors.length;
             this.wallAnchors.push(wa);
         }
@@ -245,16 +248,25 @@ export class Wall {
         }
 
         this.segmentDirRad += dirRadOffset;
-        this.cursorX += Math.cos(this.segmentDirRad) * SEGMENT_LENGTH;
-        this.cursorY += Math.sin(this.segmentDirRad) * SEGMENT_LENGTH;
 
-        const ws = new WallSegment();
-        ws.posX = this.cursorX;
-        ws.posY = this.cursorY;
-        this.wallSegments.push(ws);
+        const startX = this.cursorX;
+        const startY = this.cursorY;
+        this.cursorX += Math.cos(this.segmentDirRad) * BASE_SEGMENT_LENGTH;
+        this.cursorY += Math.sin(this.segmentDirRad) * BASE_SEGMENT_LENGTH;
 
-        if (this.wallSegments.length >= 2) {
-            this.addAnchor(this.wallSegments.length - 2);
+        for (let i = 1; i <= VERTEX_FREQUENCY_SCALE; i++) {
+            const t = i / VERTEX_FREQUENCY_SCALE;
+            const ws = new WallSegment();
+            ws.posX = startX + (this.cursorX - startX) * t;
+            ws.posY = startY + (this.cursorY - startY) * t;
+            if (i < VERTEX_FREQUENCY_SCALE) {
+                ws.posX += (randF() - 0.5) * HIGH_FREQUENCY_AMPLITUDE;
+            }
+            this.wallSegments.push(ws);
+
+            if (this.wallSegments.length >= 2) {
+                this.addAnchor(this.wallSegments.length - 2);
+            }
         }
     }
 }

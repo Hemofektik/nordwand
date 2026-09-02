@@ -305,6 +305,34 @@ export class SpringPhysics {
         this.updatePhysicsConstantTimeStep(deltaTime);
     }
 
+    public settle(duration = 8.0): void {
+        const constantTimeStep = 0.004;
+        const minSteps = Math.ceil(2.0 / constantTimeStep);
+        const maxSteps = Math.ceil(duration / constantTimeStep);
+        const restSpeed = 0.05;
+        const damping = 0.88;
+
+        this.time = Math.max(this.time, 1.0);
+        for (let n = 0; n < maxSteps; n++) {
+            this.updatePhysics(constantTimeStep);
+
+            let maxSpeed = 0;
+            for (const state of this.particleStates) {
+                state.velX *= damping;
+                state.velY *= damping;
+                maxSpeed = Math.max(maxSpeed, Math.hypot(state.velX, state.velY));
+            }
+
+            if (n + 1 >= minSteps && maxSpeed < restSpeed) {
+                break;
+            }
+        }
+
+        this.time = Math.max(this.time, duration);
+        this.timeAccumulator = 0;
+        this.cancelVelocities();
+    }
+
     public updatePhysicsConstantTimeStep(deltaTime: number): void {
         const constantTimeStep = 0.004;
 

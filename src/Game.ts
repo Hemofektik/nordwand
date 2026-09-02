@@ -173,6 +173,7 @@ export class Game {
         this.wall = new Wall(posX, posY);
         this.phys.wall = this.wall;
         this.player = new Player(this.phys, this.wall, posX, posY);
+        this.phys.settle();
         this.snapCameraToPlayer();
 
         this.won = false;

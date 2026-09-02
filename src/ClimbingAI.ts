@@ -14,8 +14,19 @@ export type ClimbingState = (typeof ClimbingState)[keyof typeof ClimbingState];
 
 type LimbKind = "hand" | "foot";
 
-const GRAB_RADIUS = 8;
-const REACH_ANGLE_SPEED = 6;
+const GRAB_RADIUS = 12;
+const REACH_ANGLE_SPEED = 8;
+const RAISE_ELBOW_ANGLE = Math.PI * 1.65;
+const RAISE_SHOULDER_ANGLE = Math.PI * 0.35;
+const RAISE_HIP_ANGLE = Math.PI * 1.25;
+const REST_HIP_ANGLE = Math.PI * 1.5;
+const KNEE_REST_ANGLE = Math.PI * 0.5;
+const KNEE_FLEX_ANGLE = Math.PI * 0.32;
+const ELBOW_MIN_ANGLE = Math.PI * 1.02;
+const ELBOW_MAX_ANGLE = Math.PI * 1.85;
+const KNEE_MIN_ANGLE = Math.PI * 0.22;
+const KNEE_MAX_ANGLE = Math.PI * 0.62;
+const ELBOW_PREFERRED_ANGLE = (ELBOW_MIN_ANGLE + ELBOW_MAX_ANGLE) * 0.5;
 
 function wrapAngle(angle: number): number {
     while (angle > Math.PI * 2) {
@@ -49,6 +60,24 @@ function distanceSqr(x0: number, y0: number, x1: number, y1: number): number {
     return dx * dx + dy * dy;
 }
 
+function clampRange(value: number, min: number, max: number): number {
+    return Math.min(max, Math.max(min, value));
+}
+
+function moveJointAngle(
+    current: number,
+    target: number,
+    deltaTime: number,
+    minAngle?: number,
+    maxAngle?: number,
+): number {
+    let next = lerpAngle(current, target, deltaTime);
+    if (minAngle !== undefined && maxAngle !== undefined) {
+        next = clampRange(next, minAngle, maxAngle);
+    }
+    return next;
+}
+
 function flexArm(skeleton: Skeleton, sideIndex: number, deltaTime: number): number {
     const elbow = defined(
         skeleton.phys.angularConstraints[defined(skeleton.elbowACIndex[sideIndex], "Missing elbow index")],
@@ -59,11 +88,39 @@ function flexArm(skeleton: Skeleton, sideIndex: number, deltaTime: number): numb
         "Missing shoulder constraint",
     );
 
-    const elbowDelta = (Math.PI * 1.8 - elbow.targetAngle) * deltaTime;
-    const shoulderDelta = (Math.PI * 0.2 - shoulder.targetAngle) * deltaTime;
-    elbow.targetAngle += elbowDelta;
-    shoulder.targetAngle += shoulderDelta;
-    return Math.abs(shoulderDelta) + Math.abs(elbowDelta);
+    const previousElbow = elbow.targetAngle;
+    const previousShoulder = shoulder.targetAngle;
+    elbow.targetAngle = moveJointAngle(previousElbow, RAISE_ELBOW_ANGLE, deltaTime, ELBOW_MIN_ANGLE, ELBOW_MAX_ANGLE);
+    shoulder.targetAngle = moveJointAngle(previousShoulder, RAISE_SHOULDER_ANGLE, deltaTime);
+    return (
+        Math.abs(shortestAngleDelta(previousElbow, elbow.targetAngle)) +
+        Math.abs(shortestAngleDelta(previousShoulder, shoulder.targetAngle))
+    );
+}
+
+function restPlantedLegs(skeleton: Skeleton, deltaTime: number): number {
+    let accumulatedDelta = 0;
+    for (let side = 0; side < 2; side++) {
+        if (!skeleton.isGrabbing("foot", side)) {
+            continue;
+        }
+        const hip = defined(
+            skeleton.phys.angularConstraints[defined(skeleton.hipJointACIndex[side], "Missing hip index")],
+            "Missing hip constraint",
+        );
+        const knee = defined(
+            skeleton.phys.angularConstraints[defined(skeleton.kneeJointACIndex[side], "Missing knee index")],
+            "Missing knee constraint",
+        );
+        const previousHip = hip.targetAngle;
+        const previousKnee = knee.targetAngle;
+        hip.targetAngle = moveJointAngle(previousHip, REST_HIP_ANGLE, deltaTime);
+        knee.targetAngle = moveJointAngle(previousKnee, KNEE_REST_ANGLE, deltaTime, KNEE_MIN_ANGLE, KNEE_MAX_ANGLE);
+        accumulatedDelta +=
+            Math.abs(shortestAngleDelta(previousHip, hip.targetAngle)) +
+            Math.abs(shortestAngleDelta(previousKnee, knee.targetAngle));
+    }
+    return accumulatedDelta;
 }
 
 function extendLeg(skeleton: Skeleton, sideIndex: number, deltaTime: number): number {
@@ -76,11 +133,14 @@ function extendLeg(skeleton: Skeleton, sideIndex: number, deltaTime: number): nu
         "Missing knee constraint",
     );
 
-    const hipJointDelta = (Math.PI * 1.2 - hip.targetAngle) * deltaTime;
-    const kneeJointDelta = (Math.PI * 0.8 - knee.targetAngle) * deltaTime;
-    hip.targetAngle += hipJointDelta;
-    knee.targetAngle += kneeJointDelta;
-    return Math.abs(hipJointDelta) + Math.abs(kneeJointDelta);
+    const previousHip = hip.targetAngle;
+    const previousKnee = knee.targetAngle;
+    hip.targetAngle = moveJointAngle(previousHip, RAISE_HIP_ANGLE, deltaTime);
+    knee.targetAngle = moveJointAngle(previousKnee, KNEE_FLEX_ANGLE, deltaTime, KNEE_MIN_ANGLE, KNEE_MAX_ANGLE);
+    return (
+        Math.abs(shortestAngleDelta(previousHip, hip.targetAngle)) +
+        Math.abs(shortestAngleDelta(previousKnee, knee.targetAngle))
+    );
 }
 
 function maxEnabledWallAnchorIndex(skeleton: Skeleton, kind: LimbKind): number {
@@ -136,6 +196,59 @@ function boneLengths(skeleton: Skeleton, kind: LimbKind, sideIndex: number): { p
     return { proximal, distal };
 }
 
+function jointAngle(originX: number, originY: number, jointX: number, jointY: number, endX: number, endY: number): number {
+    return wrapAngle(Math.atan2(originY - jointY, originX - jointX) - Math.atan2(endY - jointY, endX - jointX));
+}
+
+function bentJointPosition(
+    originX: number,
+    originY: number,
+    targetX: number,
+    targetY: number,
+    proximal: number,
+    distal: number,
+    preferredJointAngle: number,
+): { x: number; y: number } {
+    let reachX = targetX - originX;
+    let reachY = targetY - originY;
+    let reachDistance = Math.sqrt(reachX * reachX + reachY * reachY);
+    if (reachDistance < 0.0001) {
+        reachX = 1;
+        reachY = 0;
+        reachDistance = 1;
+    }
+
+    const maxReach = Math.max(0.5, proximal + distal - 0.5);
+    const minReach = Math.abs(proximal - distal) + 0.5;
+    const clampedDistance = Math.min(maxReach, Math.max(minReach, reachDistance));
+    const dirX = reachX / reachDistance;
+    const dirY = reachY / reachDistance;
+    const cosine = clampRange(
+        (proximal * proximal + clampedDistance * clampedDistance - distal * distal) / (2 * proximal * clampedDistance),
+        -1,
+        1,
+    );
+    const sine = Math.sqrt(Math.max(0, 1 - cosine * cosine));
+    const alongX = dirX * cosine;
+    const alongY = dirY * cosine;
+    const perpX = -dirY * sine;
+    const perpY = dirX * sine;
+
+    const jointA = {
+        x: originX + proximal * (alongX + perpX),
+        y: originY + proximal * (alongY + perpY),
+    };
+    const jointB = {
+        x: originX + proximal * (alongX - perpX),
+        y: originY + proximal * (alongY - perpY),
+    };
+    const angleA = jointAngle(originX, originY, jointA.x, jointA.y, targetX, targetY);
+    const angleB = jointAngle(originX, originY, jointB.x, jointB.y, targetX, targetY);
+    const errorA = Math.abs(shortestAngleDelta(angleA, preferredJointAngle));
+    const errorB = Math.abs(shortestAngleDelta(angleB, preferredJointAngle));
+    return errorA <= errorB ? jointA : jointB;
+}
+
 function aimLimbToward(
     skeleton: Skeleton,
     kind: LimbKind,
@@ -145,16 +258,6 @@ function aimLimbToward(
 ): number {
     const origin = originParticle(skeleton, kind);
     const { proximal, distal } = boneLengths(skeleton, kind, sideIndex);
-    const reachX = target.posX - origin.posX;
-    const reachY = target.posY - origin.posY;
-    const reachDistance = Math.sqrt(reachX * reachX + reachY * reachY);
-    const maxReach = Math.max(0.5, proximal + distal - 0.5);
-    const clampedDistance = Math.min(Math.max(reachDistance, 0.5), maxReach);
-    const cosine =
-        (proximal * proximal + distal * distal - clampedDistance * clampedDistance) / (2 * proximal * distal);
-    const interior = Math.acos(Math.min(1, Math.max(-1, cosine)));
-    const jointTarget = wrapAngle(Math.PI * 2 - interior);
-
     const proximalConstraint = defined(
         skeleton.phys.angularConstraints[
         defined(
@@ -173,19 +276,44 @@ function aimLimbToward(
         ],
         `Missing ${kind} distal angular constraint`,
     );
-
     const root = defined(
         skeleton.phys.particleStates[proximalConstraint.particleIndex0],
         `Missing ${kind} root particle`,
     );
-    const desiredProximal = wrapAngle(
-        Math.atan2(root.posY - origin.posY, root.posX - origin.posX) - Math.atan2(reachY, reachX),
+
+    const preferredDistal = kind === "hand" ? ELBOW_PREFERRED_ANGLE : KNEE_REST_ANGLE;
+    const joint = bentJointPosition(
+        origin.posX,
+        origin.posY,
+        target.posX,
+        target.posY,
+        proximal,
+        distal,
+        preferredDistal,
     );
+    const desiredProximal = jointAngle(root.posX, root.posY, origin.posX, origin.posY, joint.x, joint.y);
+    const desiredDistal = jointAngle(origin.posX, origin.posY, joint.x, joint.y, target.posX, target.posY);
 
     const previousProximal = proximalConstraint.targetAngle;
     const previousDistal = distalConstraint.targetAngle;
-    proximalConstraint.targetAngle = lerpAngle(previousProximal, desiredProximal, deltaTime);
-    distalConstraint.targetAngle = lerpAngle(previousDistal, jointTarget, deltaTime);
+    proximalConstraint.targetAngle = moveJointAngle(previousProximal, desiredProximal, deltaTime);
+    if (kind === "hand") {
+        distalConstraint.targetAngle = moveJointAngle(
+            previousDistal,
+            desiredDistal,
+            deltaTime,
+            ELBOW_MIN_ANGLE,
+            ELBOW_MAX_ANGLE,
+        );
+    } else {
+        distalConstraint.targetAngle = moveJointAngle(
+            previousDistal,
+            desiredDistal,
+            deltaTime,
+            KNEE_MIN_ANGLE,
+            KNEE_MAX_ANGLE,
+        );
+    }
 
     return (
         Math.abs(shortestAngleDelta(previousProximal, proximalConstraint.targetAngle)) +
@@ -253,6 +381,10 @@ export class ClimbingAI {
 
         if (raised) {
             if (accumulatedDelta < 0.01) {
+                releaseLowerLimbIfBothPlanted(this.skeleton, "hand");
+                releaseLowerLimbIfBothPlanted(this.skeleton, "foot");
+                this.targetHandAnchorIndex = -1;
+                this.targetFootAnchorIndex = -1;
                 this.climbinState = ClimbingState.Reach;
             }
             return;
@@ -303,27 +435,30 @@ export class ClimbingAI {
             return;
         }
 
-        releaseLowerLimbIfBothPlanted(this.skeleton, "hand");
-        releaseLowerLimbIfBothPlanted(this.skeleton, "foot");
-
         this.updateReachTargets(deltaTime);
         this.updateReachLimbAngles(deltaTime);
+        restPlantedLegs(this.skeleton, deltaTime);
 
-        const grabbed = this.tryGrabLimb("hand") || this.tryGrabLimb("foot");
-        if (grabbed) {
+        const grabbedHand = this.tryGrabLimb("hand");
+        const grabbedFoot = this.tryGrabLimb("foot");
+        if (this.reachCycleComplete(grabbedHand || grabbedFoot)) {
             this.climbinState = ClimbingState.Raise;
         }
     }
 
     private findReachableAnchor(kind: LimbKind): number {
-        const maxIndex = maxEnabledWallAnchorIndex(this.skeleton, kind);
+        if (this.skeleton.findFreeSide(kind) < 0) {
+            return -1;
+        }
+
         const origin = originParticle(this.skeleton, kind);
         const reach = limbLength(this.skeleton, kind);
         const reachSqr = reach * reach;
         const freeSide = this.skeleton.findFreeSide(kind);
         const limb = freeSide >= 0 ? this.skeleton.limbParticle(kind, freeSide) : undefined;
+        const minIndex = maxEnabledWallAnchorIndex(this.skeleton, kind) + 1;
 
-        for (let index = maxIndex + 1; index < this.wall.wallAnchors.length; index++) {
+        for (let index = minIndex; index < this.wall.wallAnchors.length; index++) {
             const anchor = this.wall.wallAnchors[index];
             if (anchor === undefined) {
                 continue;
@@ -377,6 +512,16 @@ export class ClimbingAI {
             this.targetFootAnchorIndex = -1;
         }
         return true;
+    }
+
+    private reachCycleComplete(grabbedThisFrame: boolean): boolean {
+        if (!grabbedThisFrame) {
+            return false;
+        }
+
+        const waitingOnHand = this.skeleton.findFreeSide("hand") >= 0 && this.targetHandAnchorIndex >= 0;
+        const waitingOnFoot = this.skeleton.findFreeSide("foot") >= 0 && this.targetFootAnchorIndex >= 0;
+        return !waitingOnHand && !waitingOnFoot;
     }
 
     private hasAnyGrab(): boolean {

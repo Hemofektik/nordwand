@@ -180,8 +180,8 @@ export class Skeleton {
         const anchors = this.wall.getNearbyAnchors(posX, posY, 300);
         const selectedAnchor = defined(anchors[Math.round(anchors.length / 2)], "No nearby wall anchors for skeleton");
         const armAnchorIndex = selectedAnchor.index;
-        const legAnchorIndex = armAnchorIndex - 4;
-        const armAnchor = defined(anchors[armAnchorIndex], "Missing arm anchor");
+        const legAnchorIndex = Math.max(0, armAnchorIndex - 8);
+        const armAnchor = defined(this.wall.wallAnchors[armAnchorIndex], "Missing arm anchor");
 
         posX = armAnchor.posX - this.armlength * 2.0;
         posY = armAnchor.posY + this.bodylength * 0.7;
