@@ -85,6 +85,7 @@ export class Skeleton {
     public elbowACIndex: number[] = [];
     public hipJointACIndex: number[] = [];
     public kneeJointACIndex: number[] = [];
+    public backACIndex: number[] = [];
 
     public handGrabConstraintIndex: number[] = [];
     public footGrabConstraintIndex: number[] = [];
@@ -105,24 +106,6 @@ export class Skeleton {
         drawDistanceConstraints(ctx, cam, this.phys, this.leftLegConstraintIndices, "#00AA00");
         drawDistanceConstraints(ctx, cam, this.phys, this.rightArmConstraintIndices, "#3080FF");
         drawDistanceConstraints(ctx, cam, this.phys, this.rightLegConstraintIndices, "#00FF00");
-    }
-
-    public addBowOffset(offset: number): void {
-        const leftHip = defined(this.phys.angularConstraints[defined(this.hipJointACIndex[0], "Missing left hip")], "Missing left hip constraint");
-        const rightHip = defined(this.phys.angularConstraints[defined(this.hipJointACIndex[1], "Missing right hip")], "Missing right hip constraint");
-        const leftShoulder = defined(
-            this.phys.angularConstraints[defined(this.shoulderACIndex[0], "Missing left shoulder")],
-            "Missing left shoulder constraint",
-        );
-        const rightShoulder = defined(
-            this.phys.angularConstraints[defined(this.shoulderACIndex[1], "Missing right shoulder")],
-            "Missing right shoulder constraint",
-        );
-
-        leftHip.targetAngle -= offset;
-        rightHip.targetAngle -= offset;
-        leftShoulder.targetAngle += offset;
-        rightShoulder.targetAngle += offset;
     }
 
     public letGo(): void {
@@ -245,10 +228,11 @@ export class Skeleton {
         const backAC0 = this.phys.createAngularConstraint(buttocksIndex, pelvisIndex, backIndex);
         const backAC1 = this.phys.createAngularConstraint(pelvisIndex, backIndex, neckIndex);
         const backAC2 = this.phys.createAngularConstraint(backIndex, neckIndex, headIndex);
+        this.backACIndex.push(backAC0, backAC1, backAC2);
 
-        defined(this.phys.angularConstraints[backAC0], "Missing back angular constraint 0").tightnessFactor = 2.0;
-        defined(this.phys.angularConstraints[backAC1], "Missing back angular constraint 1").tightnessFactor = 2.0;
-        defined(this.phys.angularConstraints[backAC2], "Missing back angular constraint 2").tightnessFactor = 2.0;
+        defined(this.phys.angularConstraints[backAC0], "Missing back angular constraint 0").tightnessFactor = 8.0;
+        defined(this.phys.angularConstraints[backAC1], "Missing back angular constraint 1").tightnessFactor = 8.0;
+        defined(this.phys.angularConstraints[backAC2], "Missing back angular constraint 2").tightnessFactor = 8.0;
 
         this.shoulderACIndex.push(this.phys.createAngularConstraint(backIndex, neckIndex, leftelbowIndex));
         this.elbowACIndex.push(this.phys.createAngularConstraint(neckIndex, leftelbowIndex, leftwristIndex));
@@ -261,6 +245,19 @@ export class Skeleton {
 
         this.hipJointACIndex.push(this.phys.createAngularConstraint(pelvisIndex, buttocksIndex, rightkneeIndex));
         this.kneeJointACIndex.push(this.phys.createAngularConstraint(buttocksIndex, rightkneeIndex, rightankleIndex));
+
+        for (const hipIndex of this.hipJointACIndex) {
+            defined(this.phys.angularConstraints[hipIndex], "Missing hip angular constraint").tightnessFactor = 6.0;
+        }
+        for (const kneeIndex of this.kneeJointACIndex) {
+            defined(this.phys.angularConstraints[kneeIndex], "Missing knee angular constraint").tightnessFactor = 6.0;
+        }
+        for (const shoulderIndex of this.shoulderACIndex) {
+            defined(this.phys.angularConstraints[shoulderIndex], "Missing shoulder angular constraint").tightnessFactor = 3.0;
+        }
+        for (const elbowIndex of this.elbowACIndex) {
+            defined(this.phys.angularConstraints[elbowIndex], "Missing elbow angular constraint").tightnessFactor = 3.0;
+        }
 
         const leftHandConstraintAnchorIndex = this.phys.createFixedConstraint(leftwristIndex);
         const leftHandConstraint = defined(

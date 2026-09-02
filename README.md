@@ -6,7 +6,7 @@
 
 <p align="center"><em>A lone climber, a rope, and a wall that never quite looks the same twice.</em></p>
 
-**Nordwand** is a physics-driven climbing prototype. You hang from a generated rock face, lean left and right, and try not to let go. The mockup above is the look the game is aiming for: a quiet alpine north wall, pixel clouds, and a climber who is never more than one hold away from empty air.
+**Nordwand** is a physics-driven climbing prototype. You hang from a generated rock face and try not to let go. The mockup above is the look the game is aiming for: a quiet alpine north wall, pixel clouds, and a climber who is never more than one hold away from empty air.
 
 The current build is the simulation underneath that picture — spring-particle physics, a ragdoll skeleton, a pixel rope, and a climbing AI that raises and reaches for the next anchor.
 
@@ -21,8 +21,6 @@ Then open [http://localhost:8000](http://localhost:8000). The canvas is 560×840
 
 | Key | Action |
 | --- | --- |
-| **A** / **←** | Lean left |
-| **D** / **→** | Lean right |
 | **F** | Let go |
 | **R** | New random wall |
 | **P** | Pause |

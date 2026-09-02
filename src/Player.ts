@@ -29,10 +29,6 @@ export class Player {
         this.climbingAI.draw(ctx, cam);
     }
 
-    public addBowOffset(offset: number): void {
-        this.skeleton.addBowOffset(offset);
-    }
-
     public letGo(): void {
         this.skeleton.letGo();
         this.climbingAI.stopClimbing();

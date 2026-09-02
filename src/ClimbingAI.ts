@@ -6,27 +6,47 @@ import { defined } from "./assert.ts";
 
 export const ClimbingState = {
     None: 0,
-    Raise: 1,
-    Reach: 2,
+    Coil: 1,
+    Push: 2,
+    Reach: 3,
 } as const;
 
 export type ClimbingState = (typeof ClimbingState)[keyof typeof ClimbingState];
 
 type LimbKind = "hand" | "foot";
 
-const GRAB_RADIUS = 12;
+const GRAB_RADIUS = 20;
 const REACH_ANGLE_SPEED = 8;
-const RAISE_ELBOW_ANGLE = Math.PI * 1.65;
-const RAISE_SHOULDER_ANGLE = Math.PI * 0.35;
-const RAISE_HIP_ANGLE = Math.PI * 1.25;
-const REST_HIP_ANGLE = Math.PI * 1.5;
-const KNEE_REST_ANGLE = Math.PI * 0.5;
-const KNEE_FLEX_ANGLE = Math.PI * 0.32;
+const COIL_ELBOW_ANGLE = Math.PI * 1.65;
+const HUG_SHOULDER_ANGLE = Math.PI * 0.5;
+const COIL_HIP_ANGLE = Math.PI * 1.12;
+const REACH_ELBOW_ANGLE = Math.PI * 1.08;
+const PUSH_HIP_ANGLE = Math.PI * 1.05;
+const HIGH_KNEE_ANGLE = Math.PI * 0.45;
 const ELBOW_MIN_ANGLE = Math.PI * 1.02;
 const ELBOW_MAX_ANGLE = Math.PI * 1.85;
-const KNEE_MIN_ANGLE = Math.PI * 0.22;
-const KNEE_MAX_ANGLE = Math.PI * 0.62;
-const ELBOW_PREFERRED_ANGLE = (ELBOW_MIN_ANGLE + ELBOW_MAX_ANGLE) * 0.5;
+const HIP_MIN_ANGLE = Math.PI * 0.95;
+const HIP_MAX_ANGLE = Math.PI * 1.25;
+const REACH_HIP_ANGLE = Math.PI * 1.55;
+const REACH_HIP_MIN_ANGLE = Math.PI * 1.05;
+const REACH_HIP_MAX_ANGLE = Math.PI * 1.85;
+const KNEE_MIN_ANGLE = Math.PI * 0.35;
+const KNEE_MAX_ANGLE = Math.PI * 0.95;
+const STRAIGHT_SPINE_ANGLE = Math.PI;
+const BODY_PULL = 12;
+const WALL_HUG_DISTANCE = 8;
+const WALL_HUG_STRENGTH = 18;
+const MIN_HAND_STEP = 4;
+const MIN_FOOT_STEP = 4;
+const MAX_HAND_STEP = 18;
+const MAX_FOOT_STEP = 16;
+const HAND_FOOT_SEPARATION = 10;
+const MIN_PUSH_LIFT = 3;
+const MAX_PUSH_TIME = 0.7;
+const MAX_REACH_TIME = 1.5;
+const PUSH_LEG_TIGHTNESS = 8;
+const SUPPORT_LEG_TIGHTNESS = 6;
+const FREE_LEG_TIGHTNESS = 5;
 
 function wrapAngle(angle: number): number {
     while (angle > Math.PI * 2) {
@@ -78,7 +98,13 @@ function moveJointAngle(
     return next;
 }
 
-function flexArm(skeleton: Skeleton, sideIndex: number, deltaTime: number): number {
+function poseArm(
+    skeleton: Skeleton,
+    sideIndex: number,
+    elbowTarget: number,
+    shoulderTarget: number,
+    deltaTime: number,
+): number {
     const elbow = defined(
         skeleton.phys.angularConstraints[defined(skeleton.elbowACIndex[sideIndex], "Missing elbow index")],
         "Missing elbow constraint",
@@ -90,40 +116,23 @@ function flexArm(skeleton: Skeleton, sideIndex: number, deltaTime: number): numb
 
     const previousElbow = elbow.targetAngle;
     const previousShoulder = shoulder.targetAngle;
-    elbow.targetAngle = moveJointAngle(previousElbow, RAISE_ELBOW_ANGLE, deltaTime, ELBOW_MIN_ANGLE, ELBOW_MAX_ANGLE);
-    shoulder.targetAngle = moveJointAngle(previousShoulder, RAISE_SHOULDER_ANGLE, deltaTime);
+    elbow.targetAngle = moveJointAngle(previousElbow, elbowTarget, deltaTime, ELBOW_MIN_ANGLE, ELBOW_MAX_ANGLE);
+    shoulder.targetAngle = moveJointAngle(previousShoulder, shoulderTarget, deltaTime);
     return (
         Math.abs(shortestAngleDelta(previousElbow, elbow.targetAngle)) +
         Math.abs(shortestAngleDelta(previousShoulder, shoulder.targetAngle))
     );
 }
 
-function restPlantedLegs(skeleton: Skeleton, deltaTime: number): number {
-    let accumulatedDelta = 0;
-    for (let side = 0; side < 2; side++) {
-        if (!skeleton.isGrabbing("foot", side)) {
-            continue;
-        }
-        const hip = defined(
-            skeleton.phys.angularConstraints[defined(skeleton.hipJointACIndex[side], "Missing hip index")],
-            "Missing hip constraint",
-        );
-        const knee = defined(
-            skeleton.phys.angularConstraints[defined(skeleton.kneeJointACIndex[side], "Missing knee index")],
-            "Missing knee constraint",
-        );
-        const previousHip = hip.targetAngle;
-        const previousKnee = knee.targetAngle;
-        hip.targetAngle = moveJointAngle(previousHip, REST_HIP_ANGLE, deltaTime);
-        knee.targetAngle = moveJointAngle(previousKnee, KNEE_REST_ANGLE, deltaTime, KNEE_MIN_ANGLE, KNEE_MAX_ANGLE);
-        accumulatedDelta +=
-            Math.abs(shortestAngleDelta(previousHip, hip.targetAngle)) +
-            Math.abs(shortestAngleDelta(previousKnee, knee.targetAngle));
-    }
-    return accumulatedDelta;
-}
-
-function extendLeg(skeleton: Skeleton, sideIndex: number, deltaTime: number): number {
+function poseLeg(
+    skeleton: Skeleton,
+    sideIndex: number,
+    hipTarget: number,
+    kneeTarget: number,
+    deltaTime: number,
+    hipMin = HIP_MIN_ANGLE,
+    hipMax = HIP_MAX_ANGLE,
+): number {
     const hip = defined(
         skeleton.phys.angularConstraints[defined(skeleton.hipJointACIndex[sideIndex], "Missing hip index")],
         "Missing hip constraint",
@@ -135,12 +144,173 @@ function extendLeg(skeleton: Skeleton, sideIndex: number, deltaTime: number): nu
 
     const previousHip = hip.targetAngle;
     const previousKnee = knee.targetAngle;
-    hip.targetAngle = moveJointAngle(previousHip, RAISE_HIP_ANGLE, deltaTime);
-    knee.targetAngle = moveJointAngle(previousKnee, KNEE_FLEX_ANGLE, deltaTime, KNEE_MIN_ANGLE, KNEE_MAX_ANGLE);
+    hip.targetAngle = moveJointAngle(previousHip, hipTarget, deltaTime, hipMin, hipMax);
+    knee.targetAngle = moveJointAngle(previousKnee, kneeTarget, deltaTime, KNEE_MIN_ANGLE, KNEE_MAX_ANGLE);
     return (
         Math.abs(shortestAngleDelta(previousHip, hip.targetAngle)) +
         Math.abs(shortestAngleDelta(previousKnee, knee.targetAngle))
     );
+}
+
+function posePlantedLimbs(
+    skeleton: Skeleton,
+    hipTarget: number,
+    kneeTarget: number,
+    deltaTime: number,
+): number {
+    let accumulatedDelta = 0;
+    let posed = false;
+    for (let side = 0; side < 2; side++) {
+        if (skeleton.isGrabbing("hand", side)) {
+            accumulatedDelta += poseArm(skeleton, side, COIL_ELBOW_ANGLE, HUG_SHOULDER_ANGLE, deltaTime);
+            posed = true;
+        }
+        if (skeleton.isGrabbing("foot", side)) {
+            accumulatedDelta += poseLeg(skeleton, side, hipTarget, kneeTarget, deltaTime);
+            posed = true;
+        }
+    }
+    return posed ? accumulatedDelta : -1;
+}
+
+function posePlantedArms(skeleton: Skeleton, deltaTime: number): number {
+    let accumulatedDelta = 0;
+    for (let side = 0; side < 2; side++) {
+        if (skeleton.isGrabbing("hand", side)) {
+            accumulatedDelta += poseArm(skeleton, side, COIL_ELBOW_ANGLE, HUG_SHOULDER_ANGLE, deltaTime);
+        }
+    }
+    return accumulatedDelta;
+}
+
+function poseFreeArms(skeleton: Skeleton, deltaTime: number): number {
+    let accumulatedDelta = 0;
+    for (let side = 0; side < 2; side++) {
+        if (skeleton.isGrabbing("hand", side)) {
+            continue;
+        }
+        accumulatedDelta += poseArm(skeleton, side, COIL_ELBOW_ANGLE, HUG_SHOULDER_ANGLE, deltaTime);
+    }
+    return accumulatedDelta;
+}
+
+function poseSupportLegs(skeleton: Skeleton, deltaTime: number): number {
+    let accumulatedDelta = 0;
+    for (let side = 0; side < 2; side++) {
+        if (!skeleton.isGrabbing("foot", side)) {
+            continue;
+        }
+        accumulatedDelta += poseLeg(skeleton, side, COIL_HIP_ANGLE, KNEE_MAX_ANGLE, deltaTime);
+    }
+    return accumulatedDelta;
+}
+
+function poseFreeLegs(skeleton: Skeleton, deltaTime: number): number {
+    let accumulatedDelta = 0;
+    for (let side = 0; side < 2; side++) {
+        if (skeleton.isGrabbing("foot", side)) {
+            continue;
+        }
+        accumulatedDelta += poseLeg(
+            skeleton,
+            side,
+            REACH_HIP_ANGLE,
+            HIGH_KNEE_ANGLE,
+            deltaTime,
+            REACH_HIP_MIN_ANGLE,
+            REACH_HIP_MAX_ANGLE,
+        );
+    }
+    return accumulatedDelta;
+}
+
+function poseSpine(skeleton: Skeleton, deltaTime: number): number {
+    let accumulatedDelta = 0;
+    for (const constraintIndex of skeleton.backACIndex) {
+        const constraint = defined(
+            skeleton.phys.angularConstraints[constraintIndex],
+            "Missing back angular constraint",
+        );
+        const previous = constraint.targetAngle;
+        constraint.targetAngle = moveJointAngle(previous, STRAIGHT_SPINE_ANGLE, deltaTime);
+        constraint.tightnessFactor = 8;
+        accumulatedDelta += Math.abs(shortestAngleDelta(previous, constraint.targetAngle));
+    }
+    return accumulatedDelta;
+}
+
+function setLegTightness(skeleton: Skeleton, plantedFactor: number, freeFactor = plantedFactor): void {
+    for (let side = 0; side < 2; side++) {
+        const hip = defined(
+            skeleton.phys.angularConstraints[defined(skeleton.hipJointACIndex[side], "Missing hip index")],
+            "Missing hip constraint",
+        );
+        const knee = defined(
+            skeleton.phys.angularConstraints[defined(skeleton.kneeJointACIndex[side], "Missing knee index")],
+            "Missing knee constraint",
+        );
+        const tightnessFactor = skeleton.isGrabbing("foot", side) ? plantedFactor : freeFactor;
+        hip.tightnessFactor = tightnessFactor;
+        knee.tightnessFactor = tightnessFactor;
+    }
+}
+
+function buttocksY(skeleton: Skeleton): number {
+    return defined(skeleton.phys.particleStates[skeleton.buttocksParticleIndex], "Missing buttocks particle").posY;
+}
+
+function pullParticleToward(
+    particle: { velX: number; velY: number; posX: number; posY: number },
+    targetX: number,
+    targetY: number,
+    desiredDistance: number,
+    deltaTime: number,
+): void {
+    const dx = targetX - particle.posX;
+    const dy = targetY - particle.posY;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    if (distance < 0.001) {
+        return;
+    }
+    const error = distance - desiredDistance;
+    const strength = BODY_PULL * deltaTime;
+    particle.velX += (dx / distance) * error * strength;
+    particle.velY += (dy / distance) * error * strength;
+}
+
+function hugWall(skeleton: Skeleton, deltaTime: number): void {
+    const particleIndices = [
+        skeleton.buttocksParticleIndex,
+        skeleton.pelvisParticleIndex,
+        skeleton.neckParticleIndex,
+    ];
+    const strength = WALL_HUG_STRENGTH * deltaTime;
+    for (const particleIndex of particleIndices) {
+        const particle = defined(skeleton.phys.particleStates[particleIndex], "Missing body particle");
+        const wallX = skeleton.wall.wallXAtY(particle.posY);
+        if (wallX === undefined) {
+            continue;
+        }
+        particle.velX += (wallX - WALL_HUG_DISTANCE - particle.posX) * strength;
+    }
+}
+
+function pullBodyTowardHolds(skeleton: Skeleton, stance: "coil" | "push", deltaTime: number): void {
+    hugWall(skeleton, deltaTime);
+
+    const buttocks = defined(
+        skeleton.phys.particleStates[skeleton.buttocksParticleIndex],
+        "Missing buttocks particle",
+    );
+    const legDistance = skeleton.leglength * (stance === "push" ? 0.98 : 0.92);
+
+    for (let side = 0; side < 2; side++) {
+        if (!skeleton.isGrabbing("foot", side)) {
+            continue;
+        }
+        const foot = skeleton.limbParticle("foot", side);
+        pullParticleToward(buttocks, foot.posX, foot.posY, legDistance, deltaTime);
+    }
 }
 
 function maxEnabledWallAnchorIndex(skeleton: Skeleton, kind: LimbKind): number {
@@ -165,15 +335,12 @@ function releaseLowerLimbIfBothPlanted(skeleton: Skeleton, kind: LimbKind): void
     skeleton.release(kind, lowerSide);
 }
 
-function limbLength(skeleton: Skeleton, kind: LimbKind): number {
-    return kind === "hand" ? skeleton.armlength : skeleton.leglength;
-}
-
 function originParticle(skeleton: Skeleton, kind: LimbKind) {
     const particleIndex = kind === "hand" ? skeleton.neckParticleIndex : skeleton.buttocksParticleIndex;
     const message = kind === "hand" ? "Missing neck particle" : "Missing buttocks particle";
     return defined(skeleton.phys.particleStates[particleIndex], message);
 }
+
 
 function boneLengths(skeleton: Skeleton, kind: LimbKind, sideIndex: number): { proximal: number; distal: number } {
     const constraintIndices =
@@ -281,7 +448,10 @@ function aimLimbToward(
         `Missing ${kind} root particle`,
     );
 
-    const preferredDistal = kind === "hand" ? ELBOW_PREFERRED_ANGLE : KNEE_REST_ANGLE;
+    const reachingUp = kind === "hand" && target.posY < origin.posY - 2;
+    const preferredDistal = kind === "hand"
+        ? (reachingUp ? REACH_ELBOW_ANGLE : COIL_ELBOW_ANGLE)
+        : HIGH_KNEE_ANGLE;
     const joint = bentJointPosition(
         origin.posX,
         origin.posY,
@@ -292,23 +462,40 @@ function aimLimbToward(
         preferredDistal,
     );
     const desiredProximal = jointAngle(root.posX, root.posY, origin.posX, origin.posY, joint.x, joint.y);
-    const desiredDistal = jointAngle(origin.posX, origin.posY, joint.x, joint.y, target.posX, target.posY);
 
     const previousProximal = proximalConstraint.targetAngle;
     const previousDistal = distalConstraint.targetAngle;
-    proximalConstraint.targetAngle = moveJointAngle(previousProximal, desiredProximal, deltaTime);
     if (kind === "hand") {
-        distalConstraint.targetAngle = moveJointAngle(
-            previousDistal,
-            desiredDistal,
-            deltaTime,
-            ELBOW_MIN_ANGLE,
-            ELBOW_MAX_ANGLE,
-        );
+        if (reachingUp) {
+            proximalConstraint.targetAngle = moveJointAngle(previousProximal, desiredProximal, deltaTime);
+            distalConstraint.targetAngle = moveJointAngle(
+                previousDistal,
+                REACH_ELBOW_ANGLE,
+                deltaTime,
+                ELBOW_MIN_ANGLE,
+                ELBOW_MAX_ANGLE,
+            );
+        } else {
+            proximalConstraint.targetAngle = moveJointAngle(previousProximal, HUG_SHOULDER_ANGLE, deltaTime);
+            distalConstraint.targetAngle = moveJointAngle(
+                previousDistal,
+                COIL_ELBOW_ANGLE,
+                deltaTime,
+                ELBOW_MIN_ANGLE,
+                ELBOW_MAX_ANGLE,
+            );
+        }
     } else {
+        proximalConstraint.targetAngle = moveJointAngle(
+            previousProximal,
+            desiredProximal,
+            deltaTime,
+            REACH_HIP_MIN_ANGLE,
+            REACH_HIP_MAX_ANGLE,
+        );
         distalConstraint.targetAngle = moveJointAngle(
             previousDistal,
-            desiredDistal,
+            HIGH_KNEE_ANGLE,
             deltaTime,
             KNEE_MIN_ANGLE,
             KNEE_MAX_ANGLE,
@@ -325,9 +512,12 @@ export class ClimbingAI {
     public rope: Rope;
     public skeleton: Skeleton;
     public wall: Wall;
-    public climbinState: ClimbingState = ClimbingState.Raise;
+    public climbinState: ClimbingState = ClimbingState.Coil;
     public targetHandAnchorIndex = -1;
     public targetFootAnchorIndex = -1;
+    public pushElapsed = 0;
+    public pushStartButtocksY = 0;
+    public reachElapsed = 0;
 
     public constructor(rope: Rope, wall: Wall, skeleton: Skeleton) {
         this.rope = rope;
@@ -336,8 +526,12 @@ export class ClimbingAI {
     }
 
     public update(deltaTime: number): void {
-        if (this.climbinState === ClimbingState.Raise) {
-            this.updateRaise(deltaTime);
+        if (this.climbinState === ClimbingState.Coil) {
+            this.updateCoil(deltaTime);
+            return;
+        }
+        if (this.climbinState === ClimbingState.Push) {
+            this.updatePush(deltaTime);
             return;
         }
         if (this.climbinState === ClimbingState.Reach) {
@@ -349,59 +543,84 @@ export class ClimbingAI {
         this.climbinState = ClimbingState.None;
         this.targetHandAnchorIndex = -1;
         this.targetFootAnchorIndex = -1;
+        this.pushElapsed = 0;
+        this.reachElapsed = 0;
     }
 
     public draw(_ctx: CanvasRenderingContext2D, _cam: Camera): void { }
 
-    public updateRaise(deltaTime: number): void {
-        let raised = false;
-        let accumulatedDelta = 0.0;
-
-        for (let n = 0; n < this.skeleton.handGrabConstraintIndex.length; n++) {
-            const constraint = defined(
-                this.skeleton.phys.fixedConstraints[defined(this.skeleton.handGrabConstraintIndex[n], "Missing hand grab")],
-                "Missing hand grab constraint",
-            );
-            if (constraint.isEnabled) {
-                accumulatedDelta += flexArm(this.skeleton, n, deltaTime);
-                raised = true;
-            }
-        }
-
-        for (let n = 0; n < this.skeleton.footGrabConstraintIndex.length; n++) {
-            const constraint = defined(
-                this.skeleton.phys.fixedConstraints[defined(this.skeleton.footGrabConstraintIndex[n], "Missing foot grab")],
-                "Missing foot grab constraint",
-            );
-            if (constraint.isEnabled) {
-                accumulatedDelta += extendLeg(this.skeleton, n, deltaTime);
-                raised = true;
-            }
-        }
-
-        if (raised) {
-            if (accumulatedDelta < 0.01) {
-                releaseLowerLimbIfBothPlanted(this.skeleton, "hand");
-                releaseLowerLimbIfBothPlanted(this.skeleton, "foot");
-                this.targetHandAnchorIndex = -1;
-                this.targetFootAnchorIndex = -1;
-                this.climbinState = ClimbingState.Reach;
-            }
+    public updateCoil(deltaTime: number): void {
+        if (!this.hasAnyGrab()) {
+            this.climbinState = ClimbingState.None;
             return;
         }
 
-        this.climbinState = ClimbingState.None;
+        releaseLowerLimbIfBothPlanted(this.skeleton, "foot");
+
+        setLegTightness(this.skeleton, SUPPORT_LEG_TIGHTNESS, FREE_LEG_TIGHTNESS);
+        pullBodyTowardHolds(this.skeleton, "coil", deltaTime);
+        const accumulatedDelta =
+            poseSpine(this.skeleton, deltaTime) +
+            posePlantedArms(this.skeleton, deltaTime) +
+            poseFreeArms(this.skeleton, deltaTime) +
+            poseSupportLegs(this.skeleton, deltaTime) +
+            poseFreeLegs(this.skeleton, deltaTime);
+        if (accumulatedDelta < 0.01) {
+            this.reachElapsed = 0;
+            this.climbinState = ClimbingState.Reach;
+        }
+    }
+
+    public updatePush(deltaTime: number): void {
+        if (this.pushElapsed === 0) {
+            this.pushStartButtocksY = buttocksY(this.skeleton);
+        }
+        this.pushElapsed += deltaTime;
+
+        releaseLowerLimbIfBothPlanted(this.skeleton, "hand");
+        releaseLowerLimbIfBothPlanted(this.skeleton, "foot");
+        setLegTightness(this.skeleton, PUSH_LEG_TIGHTNESS, FREE_LEG_TIGHTNESS);
+        pullBodyTowardHolds(this.skeleton, "push", deltaTime);
+
+        const plantedDelta = posePlantedLimbs(
+            this.skeleton,
+            PUSH_HIP_ANGLE,
+            KNEE_MAX_ANGLE,
+            deltaTime,
+        );
+        if (plantedDelta < 0) {
+            this.pushElapsed = 0;
+            this.climbinState = ClimbingState.None;
+            return;
+        }
+
+        const accumulatedDelta =
+            poseSpine(this.skeleton, deltaTime) +
+            plantedDelta +
+            poseFreeArms(this.skeleton, deltaTime) +
+            poseFreeLegs(this.skeleton, deltaTime);
+
+        const hipsRose = this.pushStartButtocksY - buttocksY(this.skeleton) >= MIN_PUSH_LIFT;
+        const poseReady = accumulatedDelta < 0.01;
+        if ((poseReady && hipsRose) || this.pushElapsed >= MAX_PUSH_TIME) {
+            this.targetHandAnchorIndex = -1;
+            this.targetFootAnchorIndex = -1;
+            this.pushElapsed = 0;
+            this.climbinState = ClimbingState.Coil;
+        }
     }
 
     public updateReachTargets(_deltaTime?: number): void {
-        if (this.targetHandAnchorIndex >= 0 && this.targetFootAnchorIndex >= 0) {
-            return;
+        if (!this.isCurrentTargetValid("hand")) {
+            this.targetHandAnchorIndex = -1;
         }
-
         if (this.targetHandAnchorIndex === -1) {
             this.targetHandAnchorIndex = this.findReachableAnchor("hand");
         }
 
+        if (!this.isCurrentTargetValid("foot")) {
+            this.targetFootAnchorIndex = -1;
+        }
         if (this.targetFootAnchorIndex === -1) {
             this.targetFootAnchorIndex = this.findReachableAnchor("foot");
         }
@@ -435,14 +654,28 @@ export class ClimbingAI {
             return;
         }
 
+        this.reachElapsed += deltaTime;
         this.updateReachTargets(deltaTime);
+        pullBodyTowardHolds(this.skeleton, "coil", deltaTime);
         this.updateReachLimbAngles(deltaTime);
-        restPlantedLegs(this.skeleton, deltaTime);
+        setLegTightness(this.skeleton, SUPPORT_LEG_TIGHTNESS, FREE_LEG_TIGHTNESS);
+        poseSpine(this.skeleton, deltaTime);
+        posePlantedArms(this.skeleton, deltaTime);
+        poseSupportLegs(this.skeleton, deltaTime);
+        if (this.targetHandAnchorIndex < 0) {
+            poseFreeArms(this.skeleton, deltaTime);
+        }
+        if (this.targetFootAnchorIndex < 0) {
+            poseFreeLegs(this.skeleton, deltaTime);
+        }
 
         const grabbedHand = this.tryGrabLimb("hand");
         const grabbedFoot = this.tryGrabLimb("foot");
-        if (this.reachCycleComplete(grabbedHand || grabbedFoot)) {
-            this.climbinState = ClimbingState.Raise;
+        releaseLowerLimbIfBothPlanted(this.skeleton, "foot");
+        if (this.reachCycleComplete(grabbedHand || grabbedFoot) || this.reachElapsed >= MAX_REACH_TIME) {
+            this.pushElapsed = 0;
+            this.reachElapsed = 0;
+            this.climbinState = ClimbingState.Push;
         }
     }
 
@@ -450,34 +683,88 @@ export class ClimbingAI {
         if (this.skeleton.findFreeSide(kind) < 0) {
             return -1;
         }
+        return this.pickReachableAnchor(kind);
+    }
 
-        const origin = originParticle(this.skeleton, kind);
-        const reach = limbLength(this.skeleton, kind);
-        const reachSqr = reach * reach;
+    private pickReachableAnchor(kind: LimbKind): number {
         const freeSide = this.skeleton.findFreeSide(kind);
         const limb = freeSide >= 0 ? this.skeleton.limbParticle(kind, freeSide) : undefined;
         const minIndex = maxEnabledWallAnchorIndex(this.skeleton, kind) + 1;
+        const plantedY = this.highestPlantedY(kind);
+        const minStep = kind === "hand" ? MIN_HAND_STEP : MIN_FOOT_STEP;
+        const maxStep = kind === "hand" ? MAX_HAND_STEP : MAX_FOOT_STEP;
+        const minY = plantedY - minStep;
+        const maxY = plantedY - maxStep;
+
+        let bestIndex = -1;
+        let bestScore = Number.NEGATIVE_INFINITY;
 
         for (let index = minIndex; index < this.wall.wallAnchors.length; index++) {
             const anchor = this.wall.wallAnchors[index];
             if (anchor === undefined) {
                 continue;
             }
-
-            const originReachable = distanceSqr(origin.posX, origin.posY, anchor.posX, anchor.posY) <= reachSqr;
-            const limbReachable =
-                limb !== undefined &&
-                distanceSqr(limb.posX, limb.posY, anchor.posX, anchor.posY) <= GRAB_RADIUS * GRAB_RADIUS;
-            if (originReachable || limbReachable) {
-                return anchor.index;
+            if (anchor.posY >= minY) {
+                continue;
+            }
+            if (anchor.posY < maxY) {
+                break;
             }
 
-            if (anchor.posY < origin.posY - reach) {
-                break;
+            const limbDistanceSqr =
+                limb === undefined
+                    ? 0
+                    : distanceSqr(limb.posX, limb.posY, anchor.posX, anchor.posY);
+            const step = plantedY - anchor.posY;
+            const score = -step * 8 - limbDistanceSqr * 0.05;
+            if (score > bestScore) {
+                bestScore = score;
+                bestIndex = anchor.index;
             }
         }
 
-        return -1;
+        return bestIndex;
+    }
+
+    private isCurrentTargetValid(kind: LimbKind): boolean {
+        const targetIndex = kind === "hand" ? this.targetHandAnchorIndex : this.targetFootAnchorIndex;
+        if (targetIndex < 0) {
+            return false;
+        }
+        const anchor = this.wall.wallAnchors[targetIndex];
+        if (anchor === undefined) {
+            return false;
+        }
+        const plantedY = this.highestPlantedY(kind);
+        const step = plantedY - anchor.posY;
+        const minStep = kind === "hand" ? MIN_HAND_STEP : MIN_FOOT_STEP;
+        const maxStep = kind === "hand" ? MAX_HAND_STEP : MAX_FOOT_STEP;
+        return step >= minStep && step <= maxStep;
+    }
+
+    private highestPlantedY(kind: LimbKind): number {
+        let found = false;
+        let highestY = 0;
+        for (let side = 0; side < 2; side++) {
+            const constraint = this.skeleton.grabConstraint(kind, side);
+            if (!constraint.isEnabled) {
+                continue;
+            }
+            const planted = this.wall.wallAnchors[constraint.wallAnchorIndex];
+            if (planted === undefined) {
+                continue;
+            }
+            highestY = found ? Math.min(highestY, planted.posY) : planted.posY;
+            found = true;
+        }
+        if (found) {
+            return highestY;
+        }
+
+        if (kind === "foot") {
+            return originParticle(this.skeleton, "foot").posY + HAND_FOOT_SEPARATION;
+        }
+        return originParticle(this.skeleton, "hand").posY;
     }
 
     private tryGrabLimb(kind: LimbKind): boolean {
@@ -497,11 +784,7 @@ export class ClimbingAI {
         }
 
         const limb = this.skeleton.limbParticle(kind, freeSide);
-        const origin = originParticle(this.skeleton, kind);
-        const reach = limbLength(this.skeleton, kind);
-        const closeToHold = distanceSqr(limb.posX, limb.posY, anchor.posX, anchor.posY) <= GRAB_RADIUS * GRAB_RADIUS;
-        const originInReach = distanceSqr(origin.posX, origin.posY, anchor.posX, anchor.posY) <= reach * reach;
-        if (!closeToHold && !originInReach) {
+        if (distanceSqr(limb.posX, limb.posY, anchor.posX, anchor.posY) > GRAB_RADIUS * GRAB_RADIUS) {
             return false;
         }
 

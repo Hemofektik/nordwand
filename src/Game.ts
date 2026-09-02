@@ -6,10 +6,6 @@ import { Player } from "./Player.ts";
 import { Wall } from "./Wall.ts";
 import { requiredElement, setTextOfElement } from "./dom.ts";
 
-const KEY_A = 65;
-const KEY_D = 68;
-const KEY_LEFT = 37;
-const KEY_RIGHT = 39;
 const MOUSE_BUTTON_LEFT = 0;
 const MOUSE_BUTTON_RIGHT = 2;
 
@@ -362,8 +358,6 @@ export class Game {
         this.ctx.closePath();
         this.ctx.fill();
 
-        this.handleInput(this.frame_delta_smoothed);
-
         if (!this.paused && this.wall && this.phys && this.player) {
             this.extendWallAhead();
             this.wall.update(this.frame_delta);
@@ -379,20 +373,6 @@ export class Game {
 
         const debugInfo = "FPS: " + (1.0 / this.frame_delta_smoothed).toFixed(2);
         setTextOfElement(this.debugInfo, debugInfo);
-    }
-
-    public handleInput(deltaTime: number): void {
-        if (this.player === undefined) {
-            return;
-        }
-
-        const bowStrength = 2.0;
-        if (this.keys[KEY_A] === true || this.keys[KEY_LEFT] === true) {
-            this.player.addBowOffset(bowStrength * deltaTime);
-        }
-        if (this.keys[KEY_D] === true || this.keys[KEY_RIGHT] === true) {
-            this.player.addBowOffset(-bowStrength * deltaTime);
-        }
     }
 
     private playerPelvis(): { posX: number; posY: number } | undefined {
