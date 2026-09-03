@@ -5,71 +5,66 @@ import type { Wall, WallAnchor } from "./Wall.ts";
 import { defined } from "./assert.ts";
 
 export const ClimbingState = {
-    None: 0,
-    Coil: 1,
-    Push: 2,
-    Reach: 3,
+    Idle: 0,
+    Push: 1,
+    HandReach: 2,
+    HandSettle: 3,
+    LegReach: 4,
+    LegSettle: 5,
 } as const;
 
 export type ClimbingState = (typeof ClimbingState)[keyof typeof ClimbingState];
 
 type LimbKind = "hand" | "foot";
 
+// --- timing ---
+const PUSH_TIME = 0.9;
+const REACH_TIMEOUT = 2.5;
+const SETTLE_TIME = 0.18;
+const STUCK_LOG_INTERVAL = 2;
+const DEBUG = true;
+
+// --- grabbing ---
 const GRAB_RADIUS = 8;
-const GRAB_RADIUS_STUCK = 16;
-const REACH_ANGLE_SPEED = 10;
-const COIL_ELBOW_ANGLE = Math.PI * 1.75;
-const HUG_SHOULDER_ANGLE = Math.PI * 0.32;
-const OVERHEAD_SHOULDER_ANGLE = Math.PI * 0.92;
-const OVERHEAD_ELBOW_ANGLE = Math.PI * 1.04;
+const GRAB_RADIUS_WIDE = 16;
+const WIDE_GRAB_AFTER = 1.2;
+
+// --- pose angles ---
+const STRAIGHT_HIP_ANGLE = Math.PI;
+const STRAIGHT_KNEE_ANGLE = Math.PI * 0.95;
 const COIL_HIP_ANGLE = Math.PI * 1.12;
 const COIL_KNEE_ANGLE = Math.PI * 0.5;
-const REACH_ELBOW_ANGLE = Math.PI * 1.04;
-const PUSH_HIP_ANGLE = Math.PI;
-const HIGH_KNEE_ANGLE = Math.PI * 0.45;
+const OVERHEAD_SHOULDER_ANGLE = Math.PI * 0.92;
+const STRAIGHT_ELBOW_ANGLE = Math.PI * 1.04;
+const FLEX_SHOULDER_ANGLE = Math.PI * 0.55;
+const FLEX_ELBOW_ANGLE = Math.PI * 1.5;
 const ELBOW_MIN_ANGLE = Math.PI * 1.02;
 const ELBOW_MAX_ANGLE = Math.PI * 1.85;
-const HIP_MIN_ANGLE = Math.PI * 0.92;
-const HIP_MAX_ANGLE = Math.PI * 1.25;
-const REACH_HIP_ANGLE = Math.PI * 1.55;
-const REACH_HIP_MIN_ANGLE = Math.PI * 1.05;
-const REACH_HIP_MAX_ANGLE = Math.PI * 1.85;
 const KNEE_MIN_ANGLE = Math.PI * 0.35;
 const KNEE_MAX_ANGLE = Math.PI * 0.95;
 const STRAIGHT_SPINE_ANGLE = Math.PI;
+
+// --- forces ---
+const ANGLE_SPEED = 10;
 const BODY_PULL = 10;
 const WALL_HUG_DISTANCE = 6;
 const WALL_HUG_STRENGTH = 14;
-const MIN_HAND_STEP = 4;
-const MIN_FOOT_STEP = 4;
-const MAX_HAND_STEP = 18;
-const MAX_HAND_RECOVERY_STEP = 32;
-const MAX_FOOT_STEP = 16;
-const HAND_FOOT_SEPARATION = 10;
-const MIN_HAND_FOOT_SEPARATION = 14;
-const HAND_FOOT_GAP_MOVE_THRESHOLD = 16;
-const OPTIMAL_HAND_FOOT_SEPARATION = 20;
-const MAX_HAND_FOOT_SEPARATION = 30;
-const MIN_PUSH_LIFT = 3;
-const PUSH_STRAIGHTEN_DURATION = 0.92;
-const MAX_PUSH_TIME = 1.23;
-const COIL_LEG_LENGTH_FACTOR = 0.92;
-const PUSH_LEG_LENGTH_FACTOR = 1.0;
-const MAX_COIL_TIME = 0.45;
-const MAX_REACH_TIME = 4.5;
-const LIMB_REACH_TIMEOUT = 2;
-const STUCK_LOG_INTERVAL = 2;
-const CLIMB_DEBUG = true;
-const PUSH_LEG_TIGHTNESS = 6;
-const SUPPORT_LEG_TIGHTNESS = 5;
-const FREE_LEG_TIGHTNESS = 6;
-const PLANTED_ARM_TIGHTNESS = 5;
-const FREE_ARM_TIGHTNESS = 5;
-const SPINE_BOTTOM_TIGHTNESS = 12;
-const SPINE_TIGHTNESS = 10;
-const SPINE_HEAD_TIGHTNESS = 8;
 const LIMB_REACH_PULL = 90;
 const LIMB_REACH_TRAVEL = 7;
+const PLANTED_TIGHTNESS = 8;
+const FREE_TIGHTNESS = 4;
+
+// --- step selection ---
+const MIN_STEP = 4;
+
+const STATE_NAMES: Record<ClimbingState, string> = {
+    [ClimbingState.Idle]: "Idle",
+    [ClimbingState.Push]: "Push",
+    [ClimbingState.HandReach]: "HandReach",
+    [ClimbingState.HandSettle]: "HandSettle",
+    [ClimbingState.LegReach]: "LegReach",
+    [ClimbingState.LegSettle]: "LegSettle",
+};
 
 function wrapAngle(angle: number): number {
     while (angle > Math.PI * 2) {
@@ -92,20 +87,9 @@ function shortestAngleDelta(from: number, to: number): number {
     return delta;
 }
 
-function lerpAngle(
-    current: number,
-    target: number,
-    deltaTime: number,
-    speed = REACH_ANGLE_SPEED,
-): number {
+function lerpAngle(current: number, target: number, deltaTime: number, speed = ANGLE_SPEED): number {
     const delta = shortestAngleDelta(current, target);
     return wrapAngle(current + delta * Math.min(1, deltaTime * speed));
-}
-
-function distanceSqr(x0: number, y0: number, x1: number, y1: number): number {
-    const dx = x1 - x0;
-    const dy = y1 - y0;
-    return dx * dx + dy * dy;
 }
 
 function clampRange(value: number, min: number, max: number): number {
@@ -119,6 +103,12 @@ function smoothstep(value: number): number {
 
 function blendAngle(from: number, to: number, t: number): number {
     return wrapAngle(from + shortestAngleDelta(from, to) * clampRange(t, 0, 1));
+}
+
+function distanceSqr(x0: number, y0: number, x1: number, y1: number): number {
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    return dx * dx + dy * dy;
 }
 
 function currentConstraintAngle(skeleton: Skeleton, constraintIndex: number): number {
@@ -150,9 +140,8 @@ function moveJointAngle(
     deltaTime: number,
     minAngle?: number,
     maxAngle?: number,
-    speed = REACH_ANGLE_SPEED,
 ): number {
-    let next = lerpAngle(current, target, deltaTime, speed);
+    let next = lerpAngle(current, target, deltaTime);
     if (minAngle !== undefined && maxAngle !== undefined) {
         next = clampRange(next, minAngle, maxAngle);
     }
@@ -165,7 +154,7 @@ function poseArm(
     elbowTarget: number,
     shoulderTarget: number,
     deltaTime: number,
-): number {
+): void {
     const elbow = defined(
         skeleton.phys.angularConstraints[defined(skeleton.elbowACIndex[sideIndex], "Missing elbow index")],
         "Missing elbow constraint",
@@ -174,15 +163,8 @@ function poseArm(
         skeleton.phys.angularConstraints[defined(skeleton.shoulderACIndex[sideIndex], "Missing shoulder index")],
         "Missing shoulder constraint",
     );
-
-    const previousElbow = elbow.targetAngle;
-    const previousShoulder = shoulder.targetAngle;
-    elbow.targetAngle = moveJointAngle(previousElbow, elbowTarget, deltaTime, ELBOW_MIN_ANGLE, ELBOW_MAX_ANGLE);
-    shoulder.targetAngle = moveJointAngle(previousShoulder, shoulderTarget, deltaTime);
-    return (
-        Math.abs(shortestAngleDelta(previousElbow, elbow.targetAngle)) +
-        Math.abs(shortestAngleDelta(previousShoulder, shoulder.targetAngle))
-    );
+    elbow.targetAngle = moveJointAngle(elbow.targetAngle, elbowTarget, deltaTime, ELBOW_MIN_ANGLE, ELBOW_MAX_ANGLE);
+    shoulder.targetAngle = moveJointAngle(shoulder.targetAngle, shoulderTarget, deltaTime);
 }
 
 function poseLeg(
@@ -191,10 +173,7 @@ function poseLeg(
     hipTarget: number,
     kneeTarget: number,
     deltaTime: number,
-    hipMin = HIP_MIN_ANGLE,
-    hipMax = HIP_MAX_ANGLE,
-    kneeSpeed = REACH_ANGLE_SPEED,
-): number {
+): void {
     const hip = defined(
         skeleton.phys.angularConstraints[defined(skeleton.hipJointACIndex[sideIndex], "Missing hip index")],
         "Missing hip constraint",
@@ -203,216 +182,59 @@ function poseLeg(
         skeleton.phys.angularConstraints[defined(skeleton.kneeJointACIndex[sideIndex], "Missing knee index")],
         "Missing knee constraint",
     );
-
-    const previousHip = hip.targetAngle;
-    const previousKnee = knee.targetAngle;
-    hip.targetAngle = moveJointAngle(previousHip, hipTarget, deltaTime, hipMin, hipMax);
-    knee.targetAngle = moveJointAngle(
-        previousKnee,
-        kneeTarget,
-        deltaTime,
-        KNEE_MIN_ANGLE,
-        KNEE_MAX_ANGLE,
-        kneeSpeed,
-    );
-    return (
-        Math.abs(shortestAngleDelta(previousHip, hip.targetAngle)) +
-        Math.abs(shortestAngleDelta(previousKnee, knee.targetAngle))
-    );
+    hip.targetAngle = moveJointAngle(hip.targetAngle, hipTarget, deltaTime);
+    knee.targetAngle = moveJointAngle(knee.targetAngle, kneeTarget, deltaTime, KNEE_MIN_ANGLE, KNEE_MAX_ANGLE);
 }
 
-function posePlantedPush(
-    skeleton: Skeleton,
-    progress: number,
-    startHipAngle: readonly [number, number],
-    startKneeAngle: readonly [number, number],
-    deltaTime: number,
-): number {
-    let accumulatedDelta = 0;
-    let posed = false;
-    for (let side = 0; side < 2; side++) {
-        if (skeleton.isGrabbing("hand", side)) {
-            accumulatedDelta += poseArm(skeleton, side, COIL_ELBOW_ANGLE, HUG_SHOULDER_ANGLE, deltaTime);
-            posed = true;
-        }
-        if (!skeleton.isGrabbing("foot", side)) {
-            continue;
-        }
-        const hip = defined(
-            skeleton.phys.angularConstraints[defined(skeleton.hipJointACIndex[side], "Missing hip index")],
-            "Missing hip constraint",
-        );
-        const knee = defined(
-            skeleton.phys.angularConstraints[defined(skeleton.kneeJointACIndex[side], "Missing knee index")],
-            "Missing knee constraint",
-        );
-        const previousHip = hip.targetAngle;
-        const previousKnee = knee.targetAngle;
-        hip.targetAngle = clampRange(
-            blendAngle(defined(startHipAngle[side], "Missing start hip angle"), PUSH_HIP_ANGLE, progress),
-            HIP_MIN_ANGLE,
-            HIP_MAX_ANGLE,
-        );
-        knee.targetAngle = clampRange(
-            blendAngle(defined(startKneeAngle[side], "Missing start knee angle"), KNEE_MAX_ANGLE, progress),
-            KNEE_MIN_ANGLE,
-            KNEE_MAX_ANGLE,
-        );
-        accumulatedDelta +=
-            Math.abs(shortestAngleDelta(previousHip, hip.targetAngle)) +
-            Math.abs(shortestAngleDelta(previousKnee, knee.targetAngle));
-        posed = true;
-    }
-    return posed ? accumulatedDelta : -1;
-}
-
-function posePlantedArms(skeleton: Skeleton, deltaTime: number): number {
-    let accumulatedDelta = 0;
-    for (let side = 0; side < 2; side++) {
-        if (skeleton.isGrabbing("hand", side)) {
-            accumulatedDelta += poseArm(skeleton, side, COIL_ELBOW_ANGLE, HUG_SHOULDER_ANGLE, deltaTime);
-        }
-    }
-    return accumulatedDelta;
-}
-
-function poseFreeArms(skeleton: Skeleton, deltaTime: number): number {
-    let accumulatedDelta = 0;
-    for (let side = 0; side < 2; side++) {
-        if (skeleton.isGrabbing("hand", side)) {
-            continue;
-        }
-        accumulatedDelta += poseArm(skeleton, side, OVERHEAD_ELBOW_ANGLE, OVERHEAD_SHOULDER_ANGLE, deltaTime);
-        const neck = originParticle(skeleton, "hand");
-        const hand = skeleton.limbParticle("hand", side);
-        const wallX = skeleton.wall.wallXAtY(neck.posY - skeleton.armlength);
-        const targetX = wallX === undefined ? neck.posX : wallX - WALL_HUG_DISTANCE;
-        travelParticleToward(hand, targetX, neck.posY - skeleton.armlength * 0.95, deltaTime);
-    }
-    return accumulatedDelta;
-}
-
-function poseSupportLegs(skeleton: Skeleton, deltaTime: number): number {
-    let accumulatedDelta = 0;
-    for (let side = 0; side < 2; side++) {
-        if (!skeleton.isGrabbing("foot", side)) {
-            continue;
-        }
-        accumulatedDelta += poseLeg(skeleton, side, COIL_HIP_ANGLE, COIL_KNEE_ANGLE, deltaTime);
-    }
-    return accumulatedDelta;
-}
-
-function poseFreeLegs(skeleton: Skeleton, deltaTime: number): number {
-    let accumulatedDelta = 0;
-    for (let side = 0; side < 2; side++) {
-        if (skeleton.isGrabbing("foot", side)) {
-            continue;
-        }
-        accumulatedDelta += poseLeg(
-            skeleton,
-            side,
-            REACH_HIP_ANGLE,
-            HIGH_KNEE_ANGLE,
-            deltaTime,
-            REACH_HIP_MIN_ANGLE,
-            REACH_HIP_MAX_ANGLE,
-        );
-    }
-    return accumulatedDelta;
-}
-
-function poseSpine(skeleton: Skeleton, deltaTime: number): number {
-    const tightness = [SPINE_BOTTOM_TIGHTNESS, SPINE_TIGHTNESS, SPINE_HEAD_TIGHTNESS];
-    let accumulatedDelta = 0;
+function poseSpine(skeleton: Skeleton, deltaTime: number): void {
     for (let i = 0; i < skeleton.backACIndex.length; i++) {
         const constraint = defined(
             skeleton.phys.angularConstraints[defined(skeleton.backACIndex[i], "Missing back index")],
             "Missing back angular constraint",
         );
-        const previous = constraint.targetAngle;
-        constraint.targetAngle = moveJointAngle(previous, STRAIGHT_SPINE_ANGLE, deltaTime);
-        constraint.tightnessFactor = tightness[i] ?? SPINE_TIGHTNESS;
-        accumulatedDelta += Math.abs(shortestAngleDelta(previous, constraint.targetAngle));
+        constraint.targetAngle = moveJointAngle(constraint.targetAngle, STRAIGHT_SPINE_ANGLE, deltaTime);
     }
-    return accumulatedDelta;
 }
 
-function setLegTightness(skeleton: Skeleton, plantedFactor: number, freeFactor = plantedFactor): void {
+function setLimbTightness(skeleton: Skeleton, kind: LimbKind, plantedSide: number): void {
+    const indices = kind === "hand"
+        ? [skeleton.shoulderACIndex, skeleton.elbowACIndex]
+        : [skeleton.hipJointACIndex, skeleton.kneeJointACIndex];
     for (let side = 0; side < 2; side++) {
-        const hip = defined(
-            skeleton.phys.angularConstraints[defined(skeleton.hipJointACIndex[side], "Missing hip index")],
-            "Missing hip constraint",
-        );
-        const knee = defined(
-            skeleton.phys.angularConstraints[defined(skeleton.kneeJointACIndex[side], "Missing knee index")],
-            "Missing knee constraint",
-        );
-        const tightnessFactor = skeleton.isGrabbing("foot", side) ? plantedFactor : freeFactor;
-        hip.tightnessFactor = tightnessFactor;
-        knee.tightnessFactor = tightnessFactor;
+        const tightness = side === plantedSide ? PLANTED_TIGHTNESS : FREE_TIGHTNESS;
+        for (const indexList of indices) {
+            const constraintIndex = defined(indexList[side], `Missing ${kind} joint index`);
+            const constraint = defined(
+                skeleton.phys.angularConstraints[constraintIndex],
+                `Missing ${kind} joint constraint`,
+            );
+            constraint.tightnessFactor = tightness;
+        }
     }
 }
 
-function setArmTightness(skeleton: Skeleton, plantedFactor: number, freeFactor = plantedFactor): void {
-    for (let side = 0; side < 2; side++) {
-        const shoulder = defined(
-            skeleton.phys.angularConstraints[defined(skeleton.shoulderACIndex[side], "Missing shoulder index")],
-            "Missing shoulder constraint",
-        );
-        const elbow = defined(
-            skeleton.phys.angularConstraints[defined(skeleton.elbowACIndex[side], "Missing elbow index")],
-            "Missing elbow constraint",
-        );
-        const tightnessFactor = skeleton.isGrabbing("hand", side) ? plantedFactor : freeFactor;
-        shoulder.tightnessFactor = tightnessFactor;
-        elbow.tightnessFactor = tightnessFactor;
-    }
+function originParticle(skeleton: Skeleton, kind: LimbKind) {
+    const particleIndex = kind === "hand" ? skeleton.neckParticleIndex : skeleton.buttocksParticleIndex;
+    const message = kind === "hand" ? "Missing neck particle" : "Missing buttocks particle";
+    return defined(skeleton.phys.particleStates[particleIndex], message);
 }
 
-function buttocksY(skeleton: Skeleton): number {
-    return defined(skeleton.phys.particleStates[skeleton.buttocksParticleIndex], "Missing buttocks particle").posY;
+function captureLegAngles(skeleton: Skeleton, side: number): { hip: number; knee: number } {
+    return {
+        hip: currentConstraintAngle(skeleton, defined(skeleton.hipJointACIndex[side], "Missing hip index")),
+        knee: currentConstraintAngle(skeleton, defined(skeleton.kneeJointACIndex[side], "Missing knee index")),
+    };
 }
 
-function capturePlantedLegAngles(skeleton: Skeleton): {
-    hips: [number, number];
-    knees: [number, number];
-} {
-    const hips: [number, number] = [COIL_HIP_ANGLE, COIL_HIP_ANGLE];
-    const knees: [number, number] = [HIGH_KNEE_ANGLE, HIGH_KNEE_ANGLE];
-    for (let side = 0; side < 2; side++) {
-        hips[side] = currentConstraintAngle(
-            skeleton,
-            defined(skeleton.hipJointACIndex[side], "Missing hip index"),
-        );
-        knees[side] = currentConstraintAngle(
-            skeleton,
-            defined(skeleton.kneeJointACIndex[side], "Missing knee index"),
-        );
-    }
-    return { hips, knees };
-}
-
-function pullParticleToward(
-    particle: { velX: number; velY: number; posX: number; posY: number },
-    targetX: number,
+function pullParticleTowardY(
+    particle: { velY: number; posY: number },
     targetY: number,
     desiredDistance: number,
     deltaTime: number,
-    axis: "xy" | "y" = "xy",
 ): void {
-    const dx = targetX - particle.posX;
-    const dy = targetY - particle.posY;
-    const distance = Math.sqrt(dx * dx + dy * dy);
-    if (distance < 0.001) {
-        return;
-    }
-    const error = distance - desiredDistance;
-    const strength = BODY_PULL * deltaTime;
-    if (axis !== "y") {
-        particle.velX += (dx / distance) * error * strength;
-    }
-    particle.velY += (dy / distance) * error * strength;
+    const error = Math.abs(targetY - particle.posY) - desiredDistance;
+    const direction = targetY < particle.posY ? -1 : 1;
+    particle.velY += direction * error * BODY_PULL * deltaTime;
 }
 
 function hugWall(skeleton: Skeleton, deltaTime: number): void {
@@ -432,149 +254,21 @@ function hugWall(skeleton: Skeleton, deltaTime: number): void {
     }
 }
 
-function pullBodyTowardHolds(skeleton: Skeleton, extensionBlend: number, deltaTime: number): void {
+function pullBodyTowardFeet(skeleton: Skeleton, extensionBlend: number, deltaTime: number): void {
     hugWall(skeleton, deltaTime);
-
     const buttocks = defined(
         skeleton.phys.particleStates[skeleton.buttocksParticleIndex],
         "Missing buttocks particle",
     );
-    const legDistance =
-        skeleton.leglength *
-        (COIL_LEG_LENGTH_FACTOR +
-            (PUSH_LEG_LENGTH_FACTOR - COIL_LEG_LENGTH_FACTOR) * clampRange(extensionBlend, 0, 1));
-
+    const legDistance = skeleton.leglength * (0.92 + 0.08 * clampRange(extensionBlend, 0, 1));
     for (let side = 0; side < 2; side++) {
         if (!skeleton.isGrabbing("foot", side)) {
             continue;
         }
-        const foot = skeleton.limbParticle("foot", side);
-        pullParticleToward(buttocks, foot.posX, foot.posY, legDistance, deltaTime, "y");
+        const plantedFoot = skeleton.limbParticle("foot", side);
+        pullParticleTowardY(buttocks, plantedFoot.posY, legDistance, deltaTime);
     }
 }
-
-function maxEnabledWallAnchorIndex(skeleton: Skeleton, kind: LimbKind): number {
-    let maxIndex = -1;
-    for (let side = 0; side < 2; side++) {
-        const constraint = skeleton.grabConstraint(kind, side);
-        if (constraint.isEnabled) {
-            maxIndex = Math.max(maxIndex, constraint.wallAnchorIndex);
-        }
-    }
-    return maxIndex;
-}
-
-function grabHoldYs(skeleton: Skeleton, wall: Wall, kind: LimbKind): number[] {
-    const holdYs: number[] = [];
-    for (let side = 0; side < 2; side++) {
-        const constraint = skeleton.grabConstraint(kind, side);
-        if (!constraint.isEnabled) {
-            continue;
-        }
-        const planted = wall.wallAnchors[constraint.wallAnchorIndex];
-        if (planted === undefined) {
-            continue;
-        }
-        holdYs.push(planted.posY);
-    }
-    return holdYs;
-}
-
-function closestHandFootGap(kind: LimbKind, anchorY: number, oppositeYs: readonly number[]): number | undefined {
-    if (oppositeYs.length === 0) {
-        return undefined;
-    }
-
-    let closestGap = Number.POSITIVE_INFINITY;
-    for (const oppositeY of oppositeYs) {
-        const gap = kind === "foot" ? anchorY - oppositeY : oppositeY - anchorY;
-        if (gap < closestGap) {
-            closestGap = gap;
-        }
-    }
-    return closestGap;
-}
-
-function isHandFootSeparationOk(kind: LimbKind, anchorY: number, oppositeYs: readonly number[]): boolean {
-    const gap = closestHandFootGap(kind, anchorY, oppositeYs);
-    if (gap === undefined) {
-        return true;
-    }
-    if (kind === "hand") {
-        return gap >= MIN_HAND_FOOT_SEPARATION;
-    }
-    return gap >= MIN_HAND_FOOT_SEPARATION && gap <= MAX_HAND_FOOT_SEPARATION;
-}
-
-function minHoldGap(handYs: readonly number[], footYs: readonly number[]): number | undefined {
-    if (handYs.length === 0 || footYs.length === 0) {
-        return undefined;
-    }
-    let minGap = Number.POSITIVE_INFINITY;
-    for (const handY of handYs) {
-        for (const footY of footYs) {
-            const gap = Math.abs(footY - handY);
-            if (gap < minGap) {
-                minGap = gap;
-            }
-        }
-    }
-    return minGap;
-}
-
-function travelParticleToward(
-    particle: { velX: number; velY: number; posX: number; posY: number },
-    targetX: number,
-    targetY: number,
-    deltaTime: number,
-): void {
-    const dx = targetX - particle.posX;
-    const dy = targetY - particle.posY;
-    const distance = Math.sqrt(dx * dx + dy * dy);
-    if (distance < 0.001) {
-        return;
-    }
-    const step = Math.min(1, deltaTime * LIMB_REACH_TRAVEL);
-    particle.posX += dx * step;
-    particle.posY += dy * step;
-    particle.velX += (dx / distance) * LIMB_REACH_PULL * deltaTime;
-    particle.velY += (dy / distance) * LIMB_REACH_PULL * deltaTime;
-}
-
-function releaseLowerLimbIfBothPlanted(
-    skeleton: Skeleton,
-    kind: LimbKind,
-    protectedAnchorIndex = -1,
-): number {
-    if (!skeleton.isGrabbing(kind, 0) || !skeleton.isGrabbing(kind, 1)) {
-        return -1;
-    }
-
-    const left = skeleton.grabConstraint(kind, 0);
-    const right = skeleton.grabConstraint(kind, 1);
-    let lowerSide = left.wallAnchorIndex <= right.wallAnchorIndex ? 0 : 1;
-    // Never release the limb that just latched: it is the one about to push.
-    const justGrabbed = skeleton.grabConstraint(kind, lowerSide);
-    if (justGrabbed.wallAnchorIndex === protectedAnchorIndex) {
-        lowerSide = lowerSide === 0 ? 1 : 0;
-    }
-    const released = skeleton.grabConstraint(kind, lowerSide);
-    if (CLIMB_DEBUG) {
-        console.log(
-            `[climb-release] ${kind} side=${lowerSide} anchor=${released.wallAnchorIndex}` +
-            ` y=${skeleton.wall.wallAnchors[released.wallAnchorIndex]?.posY.toFixed(0) ?? "?"}`,
-        );
-    }
-    skeleton.release(kind, lowerSide);
-    return released.wallAnchorIndex;
-}
-
-function originParticle(skeleton: Skeleton, kind: LimbKind) {
-    const particleIndex = kind === "hand" ? skeleton.neckParticleIndex : skeleton.buttocksParticleIndex;
-    const message = kind === "hand" ? "Missing neck particle" : "Missing buttocks particle";
-    return defined(skeleton.phys.particleStates[particleIndex], message);
-}
-
 
 function boneLengths(skeleton: Skeleton, kind: LimbKind, sideIndex: number): { proximal: number; distal: number } {
     const constraintIndices =
@@ -585,7 +279,6 @@ function boneLengths(skeleton: Skeleton, kind: LimbKind, sideIndex: number): { p
             : sideIndex === 0
                 ? skeleton.leftLegConstraintIndices
                 : skeleton.rightLegConstraintIndices;
-
     const proximal = defined(
         skeleton.phys.distanceConstraints[defined(constraintIndices[0], `Missing ${kind} proximal constraint`)],
         `Missing ${kind} proximal distance`,
@@ -656,24 +349,24 @@ function aimLimbToward(
     sideIndex: number,
     target: WallAnchor,
     deltaTime: number,
-): number {
+): void {
     const origin = originParticle(skeleton, kind);
     const { proximal, distal } = boneLengths(skeleton, kind, sideIndex);
     const proximalConstraint = defined(
         skeleton.phys.angularConstraints[
-        defined(
-            kind === "hand" ? skeleton.shoulderACIndex[sideIndex] : skeleton.hipJointACIndex[sideIndex],
-            `Missing ${kind} proximal joint`,
-        )
+            defined(
+                kind === "hand" ? skeleton.shoulderACIndex[sideIndex] : skeleton.hipJointACIndex[sideIndex],
+                `Missing ${kind} proximal joint`,
+            )
         ],
         `Missing ${kind} proximal angular constraint`,
     );
     const distalConstraint = defined(
         skeleton.phys.angularConstraints[
-        defined(
-            kind === "hand" ? skeleton.elbowACIndex[sideIndex] : skeleton.kneeJointACIndex[sideIndex],
-            `Missing ${kind} distal joint`,
-        )
+            defined(
+                kind === "hand" ? skeleton.elbowACIndex[sideIndex] : skeleton.kneeJointACIndex[sideIndex],
+                `Missing ${kind} distal joint`,
+            )
         ],
         `Missing ${kind} distal angular constraint`,
     );
@@ -682,7 +375,7 @@ function aimLimbToward(
         `Missing ${kind} root particle`,
     );
 
-    const preferredDistal = kind === "hand" ? REACH_ELBOW_ANGLE : HIGH_KNEE_ANGLE;
+    const preferredDistal = kind === "hand" ? STRAIGHT_ELBOW_ANGLE : COIL_KNEE_ANGLE;
     const joint = bentJointPosition(
         origin.posX,
         origin.posY,
@@ -695,70 +388,66 @@ function aimLimbToward(
     const desiredProximal = jointAngle(root.posX, root.posY, origin.posX, origin.posY, joint.x, joint.y);
     const desiredDistal = jointAngle(origin.posX, origin.posY, joint.x, joint.y, target.posX, target.posY);
 
-    const previousProximal = proximalConstraint.targetAngle;
-    const previousDistal = distalConstraint.targetAngle;
     if (kind === "hand") {
-        proximalConstraint.targetAngle = moveJointAngle(previousProximal, desiredProximal, deltaTime);
+        proximalConstraint.targetAngle = moveJointAngle(proximalConstraint.targetAngle, desiredProximal, deltaTime);
         distalConstraint.targetAngle = moveJointAngle(
-            previousDistal,
+            distalConstraint.targetAngle,
             desiredDistal,
             deltaTime,
             ELBOW_MIN_ANGLE,
             ELBOW_MAX_ANGLE,
         );
-        proximalConstraint.tightnessFactor = FREE_ARM_TIGHTNESS;
-        distalConstraint.tightnessFactor = FREE_ARM_TIGHTNESS;
     } else {
-        proximalConstraint.targetAngle = moveJointAngle(
-            previousProximal,
-            desiredProximal,
-            deltaTime,
-            REACH_HIP_MIN_ANGLE,
-            REACH_HIP_MAX_ANGLE,
-        );
+        proximalConstraint.targetAngle = moveJointAngle(proximalConstraint.targetAngle, desiredProximal, deltaTime);
         distalConstraint.targetAngle = moveJointAngle(
-            previousDistal,
+            distalConstraint.targetAngle,
             desiredDistal,
             deltaTime,
             KNEE_MIN_ANGLE,
             KNEE_MAX_ANGLE,
         );
-        proximalConstraint.tightnessFactor = FREE_LEG_TIGHTNESS;
-        distalConstraint.tightnessFactor = FREE_LEG_TIGHTNESS;
     }
 
     const limb = skeleton.limbParticle(kind, sideIndex);
-    travelParticleToward(limb, target.posX, target.posY, deltaTime);
-
-    return (
-        Math.abs(shortestAngleDelta(previousProximal, proximalConstraint.targetAngle)) +
-        Math.abs(shortestAngleDelta(previousDistal, distalConstraint.targetAngle))
-    );
+    const dx = target.posX - limb.posX;
+    const dy = target.posY - limb.posY;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    if (distance < 0.001) {
+        return;
+    }
+    const step = Math.min(1, deltaTime * LIMB_REACH_TRAVEL);
+    limb.posX += dx * step;
+    limb.posY += dy * step;
+    limb.velX += (dx / distance) * LIMB_REACH_PULL * deltaTime;
+    limb.velY += (dy / distance) * LIMB_REACH_PULL * deltaTime;
 }
 
+/**
+ * Deterministic climbing cycle:
+ *   1. Push      - the flexed (drive) leg extends and pushes the body up.
+ *   2. HandReach - the free arm extends up, latches a new anchor, then the old
+ *      support arm releases.
+ *   3. LegReach  - the free leg flexes up, latches a new anchor, then the old
+ *      drive leg releases.
+ *   4. Back to Push with swapped limbs.
+ */
 export class ClimbingAI {
     public rope: Rope;
     public skeleton: Skeleton;
     public wall: Wall;
-    public climbinState: ClimbingState = ClimbingState.Coil;
-    public targetHandAnchorIndex = -1;
-    public pushStartHipAngle: [number, number] = [COIL_HIP_ANGLE, COIL_HIP_ANGLE];
-    public pushStartKneeAngle: [number, number] = [HIGH_KNEE_ANGLE, HIGH_KNEE_ANGLE];
-    public targetFootAnchorIndex = -1;
-    public pushElapsed = 0;
-    public pushStartButtocksY = 0;
-    public coilElapsed = 0;
-    public reachElapsed = 0;
-    public footReachElapsed = 0;
-    public timedFootTargetIndex = -1;
-    public handReachElapsed = 0;
-    public timedHandTargetIndex = -1;
-    public nextMoveKind: LimbKind = "foot";
-    public sinceLastGrab = 0;
+    public state: ClimbingState = ClimbingState.Idle;
+    public driveLegSide = 1;
+    public supportArmSide = 0;
+    public handTargetIndex = -1;
+    public legTargetIndex = -1;
+    public phaseElapsed = 0;
     public grabCount = 0;
-    public lastFootGrabAnchorIndex = -1;
-    public lastHandGrabAnchorIndex = -1;
-    public recentlyReleasedAnchors = new Map<number, number>();
+    public pushStartHip = COIL_HIP_ANGLE;
+    public pushStartKnee = COIL_KNEE_ANGLE;
+    public handReachTime = 0;
+    public legReachTime = 0;
+    public stuckLogTimer = 0;
+    public recentlyReleased = new Map<number, number>();
 
     public constructor(rope: Rope, wall: Wall, skeleton: Skeleton) {
         this.rope = rope;
@@ -767,821 +456,333 @@ export class ClimbingAI {
     }
 
     public update(deltaTime: number): void {
-        this.sinceLastGrab += deltaTime;
-        if (this.sinceLastGrab >= STUCK_LOG_INTERVAL) {
-            this.logStuckState();
-            this.sinceLastGrab = 0;
-        }
-        if (this.climbinState === ClimbingState.Coil) {
-            this.updateCoil(deltaTime);
+        if (!this.hasAnyGrab()) {
+            if (this.state !== ClimbingState.Idle) {
+                this.log("no grabs left -> Idle");
+                this.state = ClimbingState.Idle;
+                this.resetTargets();
+            }
             return;
         }
-        if (this.climbinState === ClimbingState.Push) {
-            this.updatePush(deltaTime);
-            return;
+        if (this.state === ClimbingState.Idle) {
+            this.initializeFromGrabs();
         }
-        if (this.climbinState === ClimbingState.Reach) {
-            this.updateReach(deltaTime);
+
+        this.phaseElapsed += deltaTime;
+        setLimbTightness(this.skeleton, "hand", this.supportArmSide);
+        setLimbTightness(this.skeleton, "foot", this.driveLegSide);
+        poseSpine(this.skeleton, deltaTime);
+        pullBodyTowardFeet(this.skeleton, this.state === ClimbingState.Push ? this.pushProgress() : 1, deltaTime);
+
+        switch (this.state) {
+            case ClimbingState.Push:
+                this.updatePush(deltaTime);
+                break;
+            case ClimbingState.HandReach:
+                this.updateHandReach(deltaTime);
+                break;
+            case ClimbingState.HandSettle:
+                this.poseCycle(deltaTime);
+                if (this.phaseElapsed >= SETTLE_TIME) {
+                    this.beginPhase(ClimbingState.LegReach);
+                }
+                break;
+            case ClimbingState.LegReach:
+                this.updateLegReach(deltaTime);
+                break;
+            case ClimbingState.LegSettle:
+                this.poseCycle(deltaTime);
+                if (this.phaseElapsed >= SETTLE_TIME) {
+                    this.beginPush();
+                }
+                break;
+            default:
+                break;
+        }
+
+        if (this.phaseElapsed > STUCK_LOG_INTERVAL) {
+            this.stuckLogTimer += deltaTime;
+            if (this.stuckLogTimer >= STUCK_LOG_INTERVAL) {
+                this.stuckLogTimer = 0;
+                this.logStuck();
+            }
+        } else {
+            this.stuckLogTimer = 0;
         }
     }
 
     public stopClimbing(): void {
-        this.climbinState = ClimbingState.None;
-        this.targetHandAnchorIndex = -1;
-        this.targetFootAnchorIndex = -1;
-        this.pushElapsed = 0;
-        this.footReachElapsed = 0;
-        this.timedFootTargetIndex = -1;
-        this.handReachElapsed = 0;
-        this.timedHandTargetIndex = -1;
-        this.nextMoveKind = "foot";
-        this.coilElapsed = 0;
-        this.reachElapsed = 0;
+        this.state = ClimbingState.Idle;
+        this.resetTargets();
+        this.phaseElapsed = 0;
     }
 
     public draw(_ctx: CanvasRenderingContext2D, _cam: Camera): void { }
 
-    private logStuckState(): void {
-        const stateName = ["None", "Coil", "Push", "Reach"][this.climbinState] ?? String(this.climbinState);
-        const hand0 = this.skeleton.isGrabbing("hand", 0);
-        const hand1 = this.skeleton.isGrabbing("hand", 1);
-        const foot0 = this.skeleton.isGrabbing("foot", 0);
-        const foot1 = this.skeleton.isGrabbing("foot", 1);
-        const handAnchor = this.targetHandAnchorIndex >= 0
-            ? this.targetHandAnchorIndex
-            : -1;
-        const footAnchor = this.targetFootAnchorIndex >= 0
-            ? this.targetFootAnchorIndex
-            : -1;
-        const freeHand = this.skeleton.findFreeSide("hand");
-        const freeFoot = this.skeleton.findFreeSide("foot");
-        const gap = this.plantedHandFootGap();
-        const handLimb = freeHand >= 0 ? this.skeleton.limbParticle("hand", freeHand) : undefined;
-        const footLimb = freeFoot >= 0 ? this.skeleton.limbParticle("foot", freeFoot) : undefined;
-        const handTarget = handAnchor >= 0 ? this.wall.wallAnchors[handAnchor] : undefined;
-        const footTarget = footAnchor >= 0 ? this.wall.wallAnchors[footAnchor] : undefined;
-        const handDist = handLimb !== undefined && handTarget !== undefined
-            ? Math.sqrt(distanceSqr(handLimb.posX, handLimb.posY, handTarget.posX, handTarget.posY)).toFixed(1)
-            : "n/a";
-        const footDist = footLimb !== undefined && footTarget !== undefined
-            ? Math.sqrt(distanceSqr(footLimb.posX, footLimb.posY, footTarget.posX, footTarget.posY)).toFixed(1)
-            : "n/a";
-        console.log(
-            `[climb-stuck] state=${stateName} grabs=H${hand0 ? 1 : 0}${hand1 ? 1 : 0}/F${foot0 ? 1 : 0}${foot1 ? 1 : 0}` +
-            ` freeHand=${freeHand} freeFoot=${freeFoot}` +
-            ` targets=H${handAnchor}(d=${handDist}) F${footAnchor}(d=${footDist})` +
-            ` gap=${gap === undefined ? "n/a" : gap.toFixed(1)}` +
-            ` nextMove=${this.nextMoveKind} grabs=${this.grabCount}` +
-            ` reach=${this.reachElapsed.toFixed(2)} coil=${this.coilElapsed.toFixed(2)} push=${this.pushElapsed.toFixed(2)}`,
+    // --- phase transitions ---
+
+    private initializeFromGrabs(): void {
+        const plantedFoot = this.findPlantedSide("foot");
+        const plantedHand = this.findPlantedSide("hand");
+        this.driveLegSide = plantedFoot >= 0 ? plantedFoot : 1;
+        this.supportArmSide = plantedHand >= 0 ? plantedHand : 0;
+        this.resetTargets();
+        this.log(`init: driveLeg=${this.driveLegSide} supportArm=${this.supportArmSide}`);
+        this.beginPush();
+    }
+
+    private beginPush(): void {
+        this.beginPhase(ClimbingState.Push);
+        const angles = captureLegAngles(this.skeleton, this.driveLegSide);
+        this.pushStartHip = angles.hip;
+        this.pushStartKnee = angles.knee;
+    }
+
+    private beginPhase(phase: ClimbingState): void {
+        this.state = phase;
+        this.phaseElapsed = 0;
+        this.handReachTime = 0;
+        this.legReachTime = 0;
+        this.log(`phase -> ${STATE_NAMES[phase]}`);
+    }
+
+    private pushProgress(): number {
+        return smoothstep(this.phaseElapsed / PUSH_TIME);
+    }
+
+    private resetTargets(): void {
+        this.handTargetIndex = -1;
+        this.legTargetIndex = -1;
+    }
+
+    // --- phases ---
+
+    private updatePush(deltaTime: number): void {
+        const progress = this.pushProgress();
+        this.poseCycle(deltaTime);
+
+        // Drive leg extends from its captured (flexed) angles to straight.
+        const hip = defined(
+            this.skeleton.phys.angularConstraints[
+                defined(this.skeleton.hipJointACIndex[this.driveLegSide], "Missing hip index")
+            ],
+            "Missing hip constraint",
         );
-    }
-
-    public updateCoil(deltaTime: number): void {
-        if (!this.hasAnyGrab()) {
-            this.climbinState = ClimbingState.None;
-            return;
-        }
-
-        if (!this.needsHandSeparationRecovery()) {
-            this.blacklistReleasedAnchor(releaseLowerLimbIfBothPlanted(this.skeleton, "foot"));
-        }
-
-        this.coilElapsed += deltaTime;
-        setArmTightness(this.skeleton, PLANTED_ARM_TIGHTNESS, FREE_ARM_TIGHTNESS);
-        setLegTightness(this.skeleton, SUPPORT_LEG_TIGHTNESS, FREE_LEG_TIGHTNESS);
-        pullBodyTowardHolds(this.skeleton, 0, deltaTime);
-        this.updateReachTargets(deltaTime);
-        const plantedDelta =
-            poseSpine(this.skeleton, deltaTime) +
-            posePlantedArms(this.skeleton, deltaTime) +
-            poseSupportLegs(this.skeleton, deltaTime);
-        this.updateReachLimbAngles(deltaTime);
-        if (this.targetHandAnchorIndex < 0) {
-            poseFreeArms(this.skeleton, deltaTime);
-        }
-        if (this.targetFootAnchorIndex < 0 && !this.needsHandSeparationRecovery()) {
-            poseFreeLegs(this.skeleton, deltaTime);
-        }
-        this.tryTimeoutFootReach(deltaTime);
-        this.tryTimeoutHandReach(deltaTime);
-        if (this.needsHandSeparationRecovery()) {
-            this.reachElapsed = 0;
-            this.climbinState = ClimbingState.Reach;
-            return;
-        }
-        if ((plantedDelta < 0.01 && this.coilElapsed > 0.12) || this.coilElapsed >= MAX_COIL_TIME) {
-            this.reachElapsed = 0;
-            this.climbinState = ClimbingState.Reach;
-        }
-    }
-
-    public updatePush(deltaTime: number): void {
-        if (this.pushElapsed === 0) {
-            this.pushStartButtocksY = buttocksY(this.skeleton);
-            const startAngles = capturePlantedLegAngles(this.skeleton);
-            this.pushStartHipAngle = startAngles.hips;
-            this.pushStartKneeAngle = startAngles.knees;
-        }
-        this.pushElapsed += deltaTime;
-        const straightenProgress = smoothstep(this.pushElapsed / PUSH_STRAIGHTEN_DURATION);
-
-        this.blacklistReleasedAnchor(
-            releaseLowerLimbIfBothPlanted(this.skeleton, "hand", this.lastHandGrabAnchorIndex),
+        const knee = defined(
+            this.skeleton.phys.angularConstraints[
+                defined(this.skeleton.kneeJointACIndex[this.driveLegSide], "Missing knee index")
+            ],
+            "Missing knee constraint",
         );
-        if (!this.needsHandSeparationRecovery()) {
-            this.blacklistReleasedAnchor(
-                releaseLowerLimbIfBothPlanted(this.skeleton, "foot", this.lastFootGrabAnchorIndex),
-            );
-        }
-        setArmTightness(this.skeleton, PLANTED_ARM_TIGHTNESS, FREE_ARM_TIGHTNESS);
-        setLegTightness(this.skeleton, PUSH_LEG_TIGHTNESS, FREE_LEG_TIGHTNESS);
-        pullBodyTowardHolds(this.skeleton, straightenProgress, deltaTime);
+        hip.targetAngle = blendAngle(this.pushStartHip, STRAIGHT_HIP_ANGLE, progress);
+        knee.targetAngle = blendAngle(this.pushStartKnee, STRAIGHT_KNEE_ANGLE, progress);
 
-        const plantedDelta = posePlantedPush(
-            this.skeleton,
-            straightenProgress,
-            this.pushStartHipAngle,
-            this.pushStartKneeAngle,
-            deltaTime,
-        );
-        if (plantedDelta < 0) {
-            this.pushElapsed = 0;
-            this.climbinState = ClimbingState.None;
+        if (this.phaseElapsed >= PUSH_TIME) {
+            this.beginPhase(ClimbingState.HandReach);
+        }
+    }
+
+    private updateHandReach(deltaTime: number): void {
+        this.poseCycle(deltaTime);
+        this.handReachTime += deltaTime;
+
+        const freeSide = 1 - this.supportArmSide;
+        if (this.handTargetIndex < 0) {
+            this.handTargetIndex = this.chooseTarget("hand", freeSide, this.handReachTime > REACH_TIMEOUT);
+        }
+        const target = this.wall.wallAnchors[this.handTargetIndex];
+        if (target === undefined) {
+            this.handTargetIndex = -1;
             return;
         }
+        aimLimbToward(this.skeleton, "hand", freeSide, target, deltaTime);
 
-        poseSpine(this.skeleton, deltaTime);
-        this.updateReachTargets(deltaTime);
-        this.updateReachLimbAngles(deltaTime);
-        if (this.targetHandAnchorIndex < 0) {
-            poseFreeArms(this.skeleton, deltaTime);
+        const radius = this.handReachTime > WIDE_GRAB_AFTER ? GRAB_RADIUS_WIDE : GRAB_RADIUS;
+        if (this.tryGrab("hand", freeSide, target, radius)) {
+            this.releasePlanted("hand", this.supportArmSide);
+            this.supportArmSide = freeSide;
+            this.handTargetIndex = -1;
+            this.beginPhase(ClimbingState.HandSettle);
+        } else if (this.handReachTime >= REACH_TIMEOUT) {
+            this.handTargetIndex = -1;
+            this.handReachTime = 0;
         }
-        if (this.targetFootAnchorIndex < 0 && !this.needsHandSeparationRecovery()) {
-            poseFreeLegs(this.skeleton, deltaTime);
-        }
-        this.tryTimeoutFootReach(deltaTime);
-        this.tryTimeoutHandReach(deltaTime);
+    }
 
-        if (this.needsHandSeparationRecovery()) {
-            this.targetHandAnchorIndex = -1;
-            this.targetFootAnchorIndex = -1;
-            this.pushElapsed = 0;
-            this.coilElapsed = 0;
-            this.reachElapsed = 0;
-            this.climbinState = ClimbingState.Reach;
+    private updateLegReach(deltaTime: number): void {
+        this.poseCycle(deltaTime);
+        this.legReachTime += deltaTime;
+
+        const freeSide = 1 - this.driveLegSide;
+        if (this.legTargetIndex < 0) {
+            this.legTargetIndex = this.chooseTarget("foot", freeSide, this.legReachTime > REACH_TIMEOUT);
+        }
+        const target = this.wall.wallAnchors[this.legTargetIndex];
+        if (target === undefined) {
+            this.legTargetIndex = -1;
             return;
         }
+        aimLimbToward(this.skeleton, "foot", freeSide, target, deltaTime);
 
-        const hipsRose = this.pushStartButtocksY - buttocksY(this.skeleton) >= MIN_PUSH_LIFT;
-        if ((straightenProgress >= 1 && hipsRose) || this.pushElapsed >= MAX_PUSH_TIME) {
-            this.targetHandAnchorIndex = -1;
-            this.targetFootAnchorIndex = -1;
-            this.pushElapsed = 0;
-            this.coilElapsed = 0;
-            this.climbinState = ClimbingState.Coil;
+        const radius = this.legReachTime > WIDE_GRAB_AFTER ? GRAB_RADIUS_WIDE : GRAB_RADIUS;
+        if (this.tryGrab("foot", freeSide, target, radius)) {
+            this.releasePlanted("foot", this.driveLegSide);
+            this.driveLegSide = freeSide;
+            this.legTargetIndex = -1;
+            this.beginPhase(ClimbingState.LegSettle);
+        } else if (this.legReachTime >= REACH_TIMEOUT) {
+            this.legTargetIndex = -1;
+            this.legReachTime = 0;
         }
     }
 
-    public updateReachTargets(_deltaTime?: number): void {
-        this.restoreHandFootSeparation();
+    /**
+     * Poses everything that is not the currently moving limb:
+     * - support arm straight (overhead) during Push, flexed otherwise
+     * - drive leg straight during reach phases
+     * - free limbs coil up ready for their turn
+     */
+    private poseCycle(deltaTime: number): void {
+        const reachingHandSide = this.state === ClimbingState.HandReach ? 1 - this.supportArmSide : -1;
+        const reachingFootSide = this.state === ClimbingState.LegReach ? 1 - this.driveLegSide : -1;
 
-        const recovering = this.needsHandSeparationRecovery();
-        const plantedGap = this.plantedHandFootGap();
-        const gapTooSmall = plantedGap !== undefined && plantedGap < HAND_FOOT_GAP_MOVE_THRESHOLD;
-
-        // Hand and free foot reach simultaneously; the planted (straight) leg
-        // stays anchored until the push phase releases it.
-        if (!this.isCurrentTargetValid("hand")) {
-            this.targetHandAnchorIndex = -1;
-        }
-        if (this.targetHandAnchorIndex === -1) {
-            this.targetHandAnchorIndex = this.findReachableAnchor("hand");
-        }
-        if (this.targetHandAnchorIndex < 0) {
-            // No hold fits the step band (e.g. body fully stretched): take the
-            // closest hold to the free hand so the cycle keeps moving.
-            const freeHand = this.skeleton.findFreeSide("hand");
-            if (freeHand >= 0) {
-                this.targetHandAnchorIndex = this.pickClosestReachableHandAnchor(freeHand);
-            }
-        }
-        if (this.targetHandAnchorIndex < 0 && this.skeleton.findFreeSide("hand") < 0) {
-            // A hand move is needed but both hands are planted: release the
-            // lower one so the reach cycle can continue.
-            this.blacklistReleasedAnchor(releaseLowerLimbIfBothPlanted(this.skeleton, "hand"));
-        }
-
-        if (recovering) {
-            this.targetFootAnchorIndex = -1;
-            return;
-        }
-
-        if (!this.isCurrentTargetValid("foot")) {
-            this.targetFootAnchorIndex = -1;
-        }
-        if (this.targetFootAnchorIndex === -1) {
-            this.targetFootAnchorIndex = this.findReachableAnchor("foot");
-        }
-        if (this.targetFootAnchorIndex < 0) {
-            // No hold satisfies the hand-foot separation band (e.g. hands are
-            // far above the feet). Take the closest hold to the free foot so
-            // the legs keep stepping instead of deadlocking.
-            const freeFoot = this.skeleton.findFreeSide("foot");
-            if (freeFoot >= 0) {
-                this.targetFootAnchorIndex = this.pickClosestReachableFootAnchor(freeFoot);
-            }
-        }
-        if (gapTooSmall) {
-            // Prioritize restoring hand-foot distance: drop the foot target so
-            // the next grab is a hand. If both feet are planted the hand can
-            // never grab, so free one up first.
-            this.targetFootAnchorIndex = -1;
-            this.nextMoveKind = "hand";
-            if (this.skeleton.findFreeSide("hand") < 0 && this.skeleton.findFreeSide("foot") >= 0) {
-                this.blacklistReleasedAnchor(releaseLowerLimbIfBothPlanted(this.skeleton, "hand"));
-            } else if (this.skeleton.findFreeSide("hand") < 0 && this.skeleton.findFreeSide("foot") < 0) {
-                this.blacklistReleasedAnchor(releaseLowerLimbIfBothPlanted(this.skeleton, "foot"));
-            }
-        }
-    }
-
-    public updateReachLimbAngles(deltaTime = 0): number {
-        let accumulatedDelta = 0;
-
-        if (this.targetHandAnchorIndex >= 0) {
-            const freeHand = this.skeleton.findFreeSide("hand");
-            const target = this.wall.wallAnchors[this.targetHandAnchorIndex];
-            if (freeHand >= 0 && target !== undefined) {
-                accumulatedDelta += aimLimbToward(this.skeleton, "hand", freeHand, target, deltaTime);
-            }
-        }
-
-        if (this.targetFootAnchorIndex >= 0 && !this.needsHandSeparationRecovery()) {
-            const freeFoot = this.skeleton.findFreeSide("foot");
-            const target = this.wall.wallAnchors[this.targetFootAnchorIndex];
-            if (freeFoot >= 0 && target !== undefined) {
-                accumulatedDelta += aimLimbToward(this.skeleton, "foot", freeFoot, target, deltaTime);
-            }
-        }
-
-        return accumulatedDelta;
-    }
-
-    public updateReach(deltaTime: number): void {
-        if (!this.hasAnyGrab()) {
-            this.stopClimbing();
-            return;
-        }
-
-        this.reachElapsed += deltaTime;
-        this.updateReachTargets(deltaTime);
-        pullBodyTowardHolds(this.skeleton, 0, deltaTime);
-        this.updateReachLimbAngles(deltaTime);
-        setArmTightness(this.skeleton, PLANTED_ARM_TIGHTNESS, FREE_ARM_TIGHTNESS);
-        setLegTightness(this.skeleton, SUPPORT_LEG_TIGHTNESS, FREE_LEG_TIGHTNESS);
-        poseSpine(this.skeleton, deltaTime);
-        posePlantedArms(this.skeleton, deltaTime);
-        poseSupportLegs(this.skeleton, deltaTime);
-        if (this.targetHandAnchorIndex < 0) {
-            poseFreeArms(this.skeleton, deltaTime);
-        }
-        if (this.targetFootAnchorIndex < 0 && !this.needsHandSeparationRecovery()) {
-            poseFreeLegs(this.skeleton, deltaTime);
-        }
-
-        const grabbedHand = this.tryGrabLimb("hand");
-        let grabbedFoot = this.needsHandSeparationRecovery() ? false : this.tryGrabLimb("foot");
-        if (!grabbedFoot && !this.needsHandSeparationRecovery()) {
-            grabbedFoot = this.tryTimeoutFootReach(deltaTime);
-        }
-        if (!grabbedHand && !this.needsHandSeparationRecovery()) {
-            this.tryTimeoutHandReach(deltaTime);
-        }
-        if (!this.needsHandSeparationRecovery() && !grabbedFoot) {
-            this.blacklistReleasedAnchor(
-                releaseLowerLimbIfBothPlanted(this.skeleton, "foot", this.lastFootGrabAnchorIndex),
-            );
-        }
-        if (this.needsHandSeparationRecovery()) {
-            this.reachElapsed = Math.min(this.reachElapsed, MAX_REACH_TIME * 0.5);
-            return;
-        }
-        // The foot latched but the hand still cannot reach its hold: switch to
-        // a push so the newly planted leg raises the body toward the target.
-        if (
-            grabbedFoot &&
-            !grabbedHand &&
-            this.targetHandAnchorIndex >= 0 &&
-            this.skeleton.findFreeSide("foot") < 0
-        ) {
-            this.targetFootAnchorIndex = -1;
-            this.pushElapsed = 0;
-            this.reachElapsed = 0;
-            this.climbinState = ClimbingState.Push;
-            return;
-        }
-        if (this.reachCycleComplete(grabbedHand || grabbedFoot) || this.reachElapsed >= MAX_REACH_TIME) {
-            this.targetHandAnchorIndex = -1;
-            this.targetFootAnchorIndex = -1;
-            this.pushElapsed = 0;
-            this.reachElapsed = 0;
-            this.climbinState = ClimbingState.Push;
-        }
-    }
-
-    private findReachableAnchor(kind: LimbKind): number {
-        if (this.skeleton.findFreeSide(kind) < 0) {
-            return -1;
-        }
-        return this.pickReachableAnchor(kind);
-    }
-
-    private resetFootReachTimer(): void {
-        this.footReachElapsed = 0;
-        this.timedFootTargetIndex = this.targetFootAnchorIndex;
-    }
-
-    private blacklistReleasedAnchor(anchorIndex: number): void {
-        if (anchorIndex < 0) {
-            return;
-        }
-        this.recentlyReleasedAnchors.set(anchorIndex, this.grabCount);
-        if (this.recentlyReleasedAnchors.size > 8) {
-            const oldest = [...this.recentlyReleasedAnchors.entries()]
-                .sort((a, b) => a[1] - b[1])[0];
-            if (oldest !== undefined) {
-                this.recentlyReleasedAnchors.delete(oldest[0]);
-            }
-        }
-    }
-
-    private isAnchorBlacklisted(anchorIndex: number): boolean {
-        return this.recentlyReleasedAnchors.has(anchorIndex);
-    }
-
-    private resetHandReachTimer(): void {
-        this.handReachElapsed = 0;
-        this.timedHandTargetIndex = this.targetHandAnchorIndex;
-    }
-
-    private tryTimeoutHandReach(deltaTime: number): boolean {
-        if (this.needsHandSeparationRecovery()) {
-            this.resetHandReachTimer();
-            return false;
-        }
-
-        const freeSide = this.skeleton.findFreeSide("hand");
-        if (freeSide < 0 || this.targetHandAnchorIndex < 0) {
-            this.resetHandReachTimer();
-            return false;
-        }
-
-        if (this.timedHandTargetIndex !== this.targetHandAnchorIndex) {
-            this.timedHandTargetIndex = this.targetHandAnchorIndex;
-            this.handReachElapsed = 0;
-        }
-
-        this.handReachElapsed += deltaTime;
-        if (this.handReachElapsed < LIMB_REACH_TIMEOUT) {
-            return false;
-        }
-
-        const closestIndex = this.pickClosestReachableHandAnchor(freeSide);
-        if (closestIndex < 0) {
-            this.targetHandAnchorIndex = -1;
-            this.resetHandReachTimer();
-            return false;
-        }
-
-        const closest = this.wall.wallAnchors[closestIndex];
-        if (closest === undefined) {
-            this.resetHandReachTimer();
-            return false;
-        }
-
-        this.skeleton.grab("hand", freeSide, closest);
-        this.targetHandAnchorIndex = -1;
-        this.resetHandReachTimer();
-        this.nextMoveKind = "foot";
-        return true;
-    }
-
-    private pickClosestReachableHandAnchor(freeSide: number): number {
-        const limb = this.skeleton.limbParticle("hand", freeSide);
-        const occupied = new Set<number>();
         for (let side = 0; side < 2; side++) {
-            const constraint = this.skeleton.grabConstraint("hand", side);
-            if (constraint.isEnabled) {
-                occupied.add(constraint.wallAnchorIndex);
+            if (side === reachingHandSide) {
+                continue;
             }
-        }
+            if (this.skeleton.isGrabbing("hand", side)) {
+                const flexed = this.state !== ClimbingState.Push;
+                poseArm(
+                    this.skeleton,
+                    side,
+                    flexed ? FLEX_ELBOW_ANGLE : STRAIGHT_ELBOW_ANGLE,
+                    flexed ? FLEX_SHOULDER_ANGLE : OVERHEAD_SHOULDER_ANGLE,
+                    deltaTime,
+                );
+            } else {
+                poseArm(this.skeleton, side, FLEX_ELBOW_ANGLE, FLEX_SHOULDER_ANGLE, deltaTime);
+            }
 
-        // Prefer holds above the current hand so the fallback climbs instead
-        // of re-grabbing lower holds in a loop. Only holds within arm reach.
-        const { proximal, distal } = boneLengths(this.skeleton, "hand", freeSide);
-        const maxReachSqr = Math.pow((proximal + distal) * 1.3, 2);
-        const footYs = grabHoldYs(this.skeleton, this.wall, "foot");
-        let bestIndex = -1;
-        let bestScore = Number.NEGATIVE_INFINITY;
-        for (const anchor of this.wall.wallAnchors) {
-            if (occupied.has(anchor.index) || this.isAnchorBlacklisted(anchor.index)) {
+            if (side === reachingFootSide) {
                 continue;
             }
-            if (!isHandFootSeparationOk("hand", anchor.posY, footYs)) {
-                continue;
-            }
-            const limbDistanceSqr = distanceSqr(limb.posX, limb.posY, anchor.posX, anchor.posY);
-            if (limbDistanceSqr > maxReachSqr) {
-                continue;
-            }
-            const limbDistance = Math.sqrt(limbDistanceSqr);
-            const upwardBonus = Math.min(30, Math.max(0, limb.posY - anchor.posY));
-            const score = -limbDistance + upwardBonus;
-            if (score > bestScore) {
-                bestScore = score;
-                bestIndex = anchor.index;
+            if (this.skeleton.isGrabbing("foot", side)) {
+                const straight = this.state !== ClimbingState.Push && side === this.driveLegSide;
+                poseLeg(
+                    this.skeleton,
+                    side,
+                    straight ? STRAIGHT_HIP_ANGLE : COIL_HIP_ANGLE,
+                    straight ? STRAIGHT_KNEE_ANGLE : COIL_KNEE_ANGLE,
+                    deltaTime,
+                );
+            } else {
+                poseLeg(this.skeleton, side, COIL_HIP_ANGLE, COIL_KNEE_ANGLE, deltaTime);
             }
         }
-        return bestIndex;
     }
 
-    private tryTimeoutFootReach(deltaTime: number): boolean {
-        if (this.needsHandSeparationRecovery()) {
-            this.resetFootReachTimer();
-            return false;
-        }
+    // --- target selection ---
 
-        const freeSide = this.skeleton.findFreeSide("foot");
-        if (freeSide < 0 || this.targetFootAnchorIndex < 0) {
-            this.resetFootReachTimer();
-            return false;
-        }
-
-        if (this.timedFootTargetIndex !== this.targetFootAnchorIndex) {
-            this.timedFootTargetIndex = this.targetFootAnchorIndex;
-            this.footReachElapsed = 0;
-        }
-
-        this.footReachElapsed += deltaTime;
-        if (this.footReachElapsed < LIMB_REACH_TIMEOUT) {
-            return false;
-        }
-
-        const closestIndex = this.pickClosestReachableFootAnchor(freeSide);
-        if (closestIndex < 0) {
-            this.targetFootAnchorIndex = -1;
-            this.resetFootReachTimer();
-            return false;
-        }
-
-        const closest = this.wall.wallAnchors[closestIndex];
-        if (closest === undefined) {
-            this.resetFootReachTimer();
-            return false;
-        }
-
-        if (CLIMB_DEBUG) {
-            const target = this.wall.wallAnchors[this.targetFootAnchorIndex];
-            console.log(
-                `[climb-timeout] foot fallback: wanted=${this.targetFootAnchorIndex}` +
-                `(y=${target?.posY.toFixed(0) ?? "?"}) took=${closest.index}(y=${closest.posY.toFixed(0)})` +
-                ` footY=${this.skeleton.limbParticle("foot", freeSide).posY.toFixed(0)} elapsed=${this.footReachElapsed.toFixed(2)}`,
-            );
-        }
-
-        this.skeleton.grab("foot", freeSide, closest);
-        this.targetFootAnchorIndex = -1;
-        this.resetFootReachTimer();
-        return true;
-    }
-
-    private pickClosestReachableFootAnchor(freeSide: number): number {
-        const limb = this.skeleton.limbParticle("foot", freeSide);
-        const occupied = new Set<number>();
+    private findPlantedSide(kind: LimbKind): number {
         for (let side = 0; side < 2; side++) {
-            const constraint = this.skeleton.grabConstraint("foot", side);
-            if (constraint.isEnabled) {
-                occupied.add(constraint.wallAnchorIndex);
-            }
-        }
-        // Only consider holds the leg can physically reach.
-        const { proximal, distal } = boneLengths(this.skeleton, "foot", freeSide);
-        const maxReachSqr = Math.pow((proximal + distal) * 1.3, 2);
-        const handYs = grabHoldYs(this.skeleton, this.wall, "hand");
-        let bestIndex = -1;
-        let bestScore = Number.NEGATIVE_INFINITY;
-        for (const anchor of this.wall.wallAnchors) {
-            if (occupied.has(anchor.index) || this.isAnchorBlacklisted(anchor.index)) {
-                continue;
-            }
-            if (!isHandFootSeparationOk("foot", anchor.posY, handYs)) {
-                continue;
-            }
-            const limbDistanceSqr = distanceSqr(limb.posX, limb.posY, anchor.posX, anchor.posY);
-            if (limbDistanceSqr > maxReachSqr) {
-                continue;
-            }
-            const limbDistance = Math.sqrt(limbDistanceSqr);
-            const upwardBonus = Math.min(30, Math.max(0, limb.posY - anchor.posY));
-            const score = -limbDistance + upwardBonus;
-            if (score > bestScore) {
-                bestScore = score;
-                bestIndex = anchor.index;
-            }
-        }
-        return bestIndex;
-    }
-
-    private plantedHoldYs(kind: LimbKind): number[] {
-        return grabHoldYs(this.skeleton, this.wall, kind);
-    }
-
-    private currentHoldYs(kind: LimbKind): number[] {
-        const holdYs = this.plantedHoldYs(kind);
-        const targetIndex = kind === "hand" ? this.targetHandAnchorIndex : this.targetFootAnchorIndex;
-        if (targetIndex >= 0) {
-            const target = this.wall.wallAnchors[targetIndex];
-            if (target !== undefined) {
-                holdYs.push(target.posY);
-            }
-        }
-        return holdYs;
-    }
-
-    private plantedHandFootGap(): number | undefined {
-        return minHoldGap(this.plantedHoldYs("hand"), this.plantedHoldYs("foot"));
-    }
-
-    private needsHandSeparationRecovery(): boolean {
-        const gap = this.plantedHandFootGap();
-        return gap !== undefined && gap < MIN_HAND_FOOT_SEPARATION;
-    }
-
-    private crowdedHandSide(): number {
-        const footYs = this.currentHoldYs("foot");
-        if (footYs.length === 0) {
-            return -1;
-        }
-
-        let crowdedSide = -1;
-        let crowdedGap = Number.POSITIVE_INFINITY;
-        for (let side = 0; side < 2; side++) {
-            const constraint = this.skeleton.grabConstraint("hand", side);
-            if (!constraint.isEnabled) {
-                continue;
-            }
-            const planted = this.wall.wallAnchors[constraint.wallAnchorIndex];
-            if (planted === undefined) {
-                continue;
-            }
-            const gap = closestHandFootGap("hand", planted.posY, footYs);
-            if (gap !== undefined && gap < crowdedGap) {
-                crowdedGap = gap;
-                crowdedSide = side;
-            }
-        }
-        return crowdedGap < MIN_HAND_FOOT_SEPARATION ? crowdedSide : -1;
-    }
-
-    private restoreHandFootSeparation(): void {
-        if (!this.needsHandSeparationRecovery()) {
-            return;
-        }
-
-        this.targetFootAnchorIndex = -1;
-        const crowdedSide = this.crowdedHandSide();
-        if (crowdedSide >= 0 && this.skeleton.findFreeSide("hand") < 0) {
-            this.skeleton.release("hand", crowdedSide);
-        }
-        if (this.skeleton.findFreeSide("hand") < 0) {
-            return;
-        }
-        if (this.targetHandAnchorIndex >= 0) {
-            const target = this.wall.wallAnchors[this.targetHandAnchorIndex];
-            if (target !== undefined && isHandFootSeparationOk("hand", target.posY, this.currentHoldYs("foot"))) {
-                return;
-            }
-            this.targetHandAnchorIndex = -1;
-        }
-    }
-
-    private oppositeHoldYs(kind: LimbKind): number[] {
-        const opposite: LimbKind = kind === "hand" ? "foot" : "hand";
-        const holdYs = grabHoldYs(this.skeleton, this.wall, opposite);
-        const targetIndex = opposite === "hand" ? this.targetHandAnchorIndex : this.targetFootAnchorIndex;
-        if (targetIndex >= 0) {
-            const target = this.wall.wallAnchors[targetIndex];
-            if (target !== undefined) {
-                holdYs.push(target.posY);
-            }
-        }
-        return holdYs;
-    }
-
-    private pickReachableAnchor(kind: LimbKind): number {
-        const freeSide = this.skeleton.findFreeSide(kind);
-        const limb = freeSide >= 0 ? this.skeleton.limbParticle(kind, freeSide) : undefined;
-        const minIndex = maxEnabledWallAnchorIndex(this.skeleton, kind) + 1;
-        const plantedY = this.highestPlantedY(kind);
-        const oppositeYs = this.oppositeHoldYs(kind);
-        const recoveringHands = kind === "hand" && this.needsHandSeparationRecovery();
-        const minStep = kind === "hand" ? MIN_HAND_STEP : MIN_FOOT_STEP;
-        const maxStep = recoveringHands
-            ? MAX_HAND_RECOVERY_STEP
-            : kind === "hand"
-                ? MAX_HAND_STEP
-                : MAX_FOOT_STEP;
-        const minY = plantedY - minStep;
-        const maxY = plantedY - maxStep;
-        // Hands must stay within actual arm reach of the free hand so the
-        // target is physically graspable.
-        const maxLimbReachSqr = kind === "hand" && limb !== undefined
-            ? (() => {
-                const { proximal, distal } = boneLengths(this.skeleton, "hand", freeSide);
-                const reach = (proximal + distal) * 0.95;
-                return reach * reach;
-            })()
-            : Number.POSITIVE_INFINITY;
-
-        let bestIndex = -1;
-        let bestScore = Number.NEGATIVE_INFINITY;
-        let fallbackIndex = -1;
-        let fallbackScore = Number.NEGATIVE_INFINITY;
-
-        for (let index = minIndex; index < this.wall.wallAnchors.length; index++) {
-            const anchor = this.wall.wallAnchors[index];
-            if (anchor === undefined) {
-                continue;
-            }
-            if (this.isAnchorBlacklisted(anchor.index)) {
-                continue;
-            }
-            if (anchor.posY >= minY) {
-                continue;
-            }
-            if (anchor.posY < maxY) {
-                break;
-            }
-
-            const limbDistanceSqr =
-                limb === undefined
-                    ? 0
-                    : distanceSqr(limb.posX, limb.posY, anchor.posX, anchor.posY);
-            if (limbDistanceSqr > maxLimbReachSqr) {
-                continue;
-            }
-            const step = plantedY - anchor.posY;
-            const gap = closestHandFootGap(kind, anchor.posY, oppositeYs);
-            const gapPenalty = gap === undefined
-                ? 0
-                : recoveringHands
-                    ? Math.max(0, MIN_HAND_FOOT_SEPARATION - gap) * 20
-                    : Math.abs(gap - OPTIMAL_HAND_FOOT_SEPARATION) * 6;
-            const score = -step * 8 - limbDistanceSqr * 0.05 - gapPenalty;
-            if (score > fallbackScore) {
-                fallbackScore = score;
-                fallbackIndex = anchor.index;
-            }
-            if (!isHandFootSeparationOk(kind, anchor.posY, oppositeYs)) {
-                continue;
-            }
-            if (score > bestScore) {
-                bestScore = score;
-                bestIndex = anchor.index;
-            }
-        }
-
-        if (bestIndex >= 0) {
-            return bestIndex;
-        }
-        // The step band or separation band can exclude every candidate (e.g.
-        // hands far above the feet). Prefer the best in-band fallback, then the
-        // best hold within reach regardless of separation so the limb always
-        // gets a target and the cycle keeps moving.
-        if (fallbackIndex >= 0) {
-            const fallback = this.wall.wallAnchors[fallbackIndex];
-            if (fallback !== undefined) {
-                return fallback.index;
+            if (this.skeleton.isGrabbing(kind, side)) {
+                return side;
             }
         }
         return -1;
     }
 
-    private isCurrentTargetValid(kind: LimbKind): boolean {
-        const targetIndex = kind === "hand" ? this.targetHandAnchorIndex : this.targetFootAnchorIndex;
-        if (targetIndex < 0) {
-            return false;
+    private occupiedIndices(): Set<number> {
+        const occupied = new Set<number>();
+        for (const kind of ["hand", "foot"] as const) {
+            for (let side = 0; side < 2; side++) {
+                if (this.skeleton.isGrabbing(kind, side)) {
+                    occupied.add(this.skeleton.grabConstraint(kind, side).wallAnchorIndex);
+                }
+            }
         }
-        const anchor = this.wall.wallAnchors[targetIndex];
-        if (anchor === undefined) {
-            return false;
-        }
-        const plantedY = this.highestPlantedY(kind);
-        const step = plantedY - anchor.posY;
-        const minStep = kind === "hand" ? MIN_HAND_STEP : MIN_FOOT_STEP;
-        const maxStep = kind === "hand" && this.needsHandSeparationRecovery()
-            ? MAX_HAND_RECOVERY_STEP
-            : kind === "hand"
-                ? MAX_HAND_STEP
-                : MAX_FOOT_STEP;
-        if (step < minStep || step > maxStep) {
-            return false;
-        }
-        return isHandFootSeparationOk(kind, anchor.posY, this.oppositeHoldYs(kind));
+        return occupied;
     }
 
-    private highestPlantedY(kind: LimbKind): number {
-        let found = false;
-        let highestY = 0;
-        for (let side = 0; side < 2; side++) {
-            const constraint = this.skeleton.grabConstraint(kind, side);
-            if (!constraint.isEnabled) {
-                continue;
-            }
-            const planted = this.wall.wallAnchors[constraint.wallAnchorIndex];
-            if (planted === undefined) {
-                continue;
-            }
-            highestY = found ? Math.min(highestY, planted.posY) : planted.posY;
-            found = true;
-        }
-        if (found) {
-            return highestY;
-        }
-
-        if (kind === "foot") {
-            return originParticle(this.skeleton, "foot").posY + HAND_FOOT_SEPARATION;
-        }
-        return originParticle(this.skeleton, "hand").posY;
+    private isBlacklisted(index: number): boolean {
+        return this.recentlyReleased.has(index);
     }
 
-    private tryGrabLimb(kind: LimbKind): boolean {
-        const targetIndex = kind === "hand" ? this.targetHandAnchorIndex : this.targetFootAnchorIndex;
-        if (targetIndex < 0) {
-            return false;
+    /**
+     * Picks the next anchor for a limb: the nearest hold above the limb that
+     * is within reach. When relaxed (timeout) the reach window is widened and
+     * the "above" requirement softened so progress never stalls.
+     */
+    private chooseTarget(kind: LimbKind, side: number, relaxed: boolean): number {
+        if (side < 0) {
+            return -1;
+        }
+        const limb = this.skeleton.limbParticle(kind, side);
+        const { proximal, distal } = boneLengths(this.skeleton, kind, side);
+        const reachFactor = relaxed ? 1.35 : 1.0;
+        const reachSqr = Math.pow((proximal + distal) * reachFactor, 2);
+        const occupied = this.occupiedIndices();
+
+        let bestIndex = -1;
+        let bestScore = Number.NEGATIVE_INFINITY;
+        for (const anchor of this.wall.wallAnchors) {
+            if (occupied.has(anchor.index) || this.isBlacklisted(anchor.index)) {
+                continue;
+            }
+            const step = limb.posY - anchor.posY;
+            if (!relaxed && step < MIN_STEP) {
+                continue;
+            }
+            const distSqr = distanceSqr(limb.posX, limb.posY, anchor.posX, anchor.posY);
+            if (distSqr > reachSqr) {
+                continue;
+            }
+            const distance = Math.sqrt(distSqr);
+            const upwardBonus = relaxed ? Math.min(20, Math.max(0, step)) : 0;
+            const score = -distance + upwardBonus;
+            if (score > bestScore) {
+                bestScore = score;
+                bestIndex = anchor.index;
+            }
         }
 
-        const freeSide = this.skeleton.findFreeSide(kind);
-        if (freeSide < 0) {
-            return false;
-        }
-
-        const anchor = this.wall.wallAnchors[targetIndex];
-        if (anchor === undefined) {
-            return false;
-        }
-
-        const limb = this.skeleton.limbParticle(kind, freeSide);
-        // Widen the grab radius when the limb has been reaching for a while so
-        // a hovering limb still connects instead of circling the hold forever.
-        const reachTime = kind === "hand" ? this.handReachElapsed : this.footReachElapsed;
-        const grabRadius = reachTime > LIMB_REACH_TIMEOUT * 0.5 ? GRAB_RADIUS_STUCK : GRAB_RADIUS;
-        if (distanceSqr(limb.posX, limb.posY, anchor.posX, anchor.posY) > grabRadius * grabRadius) {
-            return false;
-        }
-        if (!isHandFootSeparationOk(kind, anchor.posY, this.oppositeHoldYs(kind))) {
-            return false;
-        }
-
-        this.skeleton.grab(kind, freeSide, anchor);
-        this.sinceLastGrab = 0;
-        this.grabCount++;
-        if (kind === "foot") {
-            this.lastFootGrabAnchorIndex = anchor.index;
-        }
-        if (CLIMB_DEBUG) {
-            const plantedFootYs = grabHoldYs(this.skeleton, this.wall, "foot")
-                .map((y) => y.toFixed(0))
-                .join(",");
-            const plantedHandYs = grabHoldYs(this.skeleton, this.wall, "hand")
-                .map((y) => y.toFixed(0))
-                .join(",");
-            console.log(
-                `[climb-grab] ${kind} side=${freeSide} anchor=${anchor.index} y=${anchor.posY.toFixed(0)}` +
-                ` state=${this.climbinState} plantedFeetY=[${plantedFootYs}] plantedHandsY=[${plantedHandYs}]` +
-                ` grabs=${this.grabCount}`,
+        if (DEBUG) {
+            const best = bestIndex >= 0 ? this.wall.wallAnchors[bestIndex] : undefined;
+            this.log(
+                `choose ${kind} side=${side}${relaxed ? " relaxed" : ""} -> ${bestIndex}` +
+                `${best !== undefined ? ` (y=${best.posY.toFixed(0)})` : " (none)"}`,
             );
         }
-        if (kind === "hand") {
-            this.targetHandAnchorIndex = -1;
-            this.resetHandReachTimer();
-            this.nextMoveKind = "foot";
-        } else {
-            this.targetFootAnchorIndex = -1;
-            this.resetFootReachTimer();
-            this.nextMoveKind = "hand";
+        return bestIndex;
+    }
+
+    private tryGrab(kind: LimbKind, side: number, anchor: WallAnchor, radius: number): boolean {
+        const limb = this.skeleton.limbParticle(kind, side);
+        if (distanceSqr(limb.posX, limb.posY, anchor.posX, anchor.posY) > radius * radius) {
+            return false;
         }
+        this.skeleton.grab(kind, side, anchor);
+        this.grabCount++;
+        this.log(`grab ${kind} side=${side} anchor=${anchor.index} y=${anchor.posY.toFixed(0)}`);
         return true;
     }
 
-    private reachCycleComplete(grabbedThisFrame: boolean): boolean {
-        if (!grabbedThisFrame) {
-            return false;
+    private releasePlanted(kind: LimbKind, side: number): void {
+        const constraint = this.skeleton.grabConstraint(kind, side);
+        const anchorIndex = constraint.wallAnchorIndex;
+        const anchor = this.wall.wallAnchors[anchorIndex];
+        this.skeleton.release(kind, side);
+        this.recentlyReleased.set(anchorIndex, this.grabCount);
+        if (this.recentlyReleased.size > 6) {
+            const oldest = [...this.recentlyReleased.entries()].sort((a, b) => a[1] - b[1])[0];
+            if (oldest !== undefined) {
+                this.recentlyReleased.delete(oldest[0]);
+            }
         }
-
-        const waitingOnHand = this.skeleton.findFreeSide("hand") >= 0 && this.targetHandAnchorIndex >= 0;
-        const waitingOnFoot = this.skeleton.findFreeSide("foot") >= 0 && this.targetFootAnchorIndex >= 0;
-        return !waitingOnHand && !waitingOnFoot;
+        this.log(
+            `release ${kind} side=${side} anchor=${anchorIndex}` +
+            ` y=${anchor !== undefined ? anchor.posY.toFixed(0) : "?"}`,
+        );
     }
 
     private hasAnyGrab(): boolean {
@@ -1590,6 +791,28 @@ export class ClimbingAI {
             this.skeleton.isGrabbing("hand", 1) ||
             this.skeleton.isGrabbing("foot", 0) ||
             this.skeleton.isGrabbing("foot", 1)
+        );
+    }
+
+    private log(message: string): void {
+        if (DEBUG) {
+            console.log(`[climb] ${message} grabs=${this.grabCount}`);
+        }
+    }
+
+    private logStuck(): void {
+        const hand0 = this.skeleton.isGrabbing("hand", 0) ? 1 : 0;
+        const hand1 = this.skeleton.isGrabbing("hand", 1) ? 1 : 0;
+        const foot0 = this.skeleton.isGrabbing("foot", 0) ? 1 : 0;
+        const foot1 = this.skeleton.isGrabbing("foot", 1) ? 1 : 0;
+        const targetHand = this.handTargetIndex >= 0 ? this.wall.wallAnchors[this.handTargetIndex] : undefined;
+        const targetFoot = this.legTargetIndex >= 0 ? this.wall.wallAnchors[this.legTargetIndex] : undefined;
+        console.log(
+            `[climb-stuck] phase=${STATE_NAMES[this.state]} H${hand0}${hand1}/F${foot0}${foot1}` +
+            ` driveLeg=${this.driveLegSide} supportArm=${this.supportArmSide}` +
+            ` targetH=${this.handTargetIndex}${targetHand !== undefined ? `(y=${targetHand.posY.toFixed(0)})` : ""}` +
+            ` targetF=${this.legTargetIndex}${targetFoot !== undefined ? `(y=${targetFoot.posY.toFixed(0)})` : ""}` +
+            ` elapsed=${this.phaseElapsed.toFixed(2)}`,
         );
     }
 }
