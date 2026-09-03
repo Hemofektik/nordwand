@@ -161,14 +161,46 @@ export class Skeleton {
     private initialize(posX: number, posY: number): void {
         const bodyParticleMass = 0.1;
         const anchors = this.wall.getNearbyAnchors(posX, posY, 300);
-        const selectedAnchor = defined(anchors[Math.round(anchors.length / 2)], "No nearby wall anchors for skeleton");
-        const armAnchorIndex = selectedAnchor.index;
-        const legAnchorIndex = Math.max(0, armAnchorIndex - 8);
+        const firstAnchor = defined(this.wall.wallAnchors[0], "Missing wall anchor for skeleton");
+        const secondAnchor = defined(this.wall.wallAnchors[1], "Missing wall anchor for skeleton");
+        const anchorSpacing = Math.max(
+            0.001,
+            Math.hypot(secondAnchor.posX - firstAnchor.posX, secondAnchor.posY - firstAnchor.posY),
+        );
+        const legAnchorOffset = Math.max(1, Math.round(80 / anchorSpacing));
+        const bodyOffsetY = this.bodylength * 0.7;
+        const bodyTopOffsetY = -this.bodylength * 0.9;
+        const bodyBottomOffsetY = this.bodylength * 0.3 + this.leglength * 0.5;
+        const middleIndex = Math.round(anchors.length / 2);
+
+        let armAnchorIndex = 0;
+        let bestAnchorScore = Number.NEGATIVE_INFINITY;
+        for (let n = 0; n < anchors.length; n++) {
+            const anchor = defined(anchors[n], "Missing nearby wall anchor");
+            const bodyX = anchor.posX - this.armlength * 2.0;
+            let clearance = Number.POSITIVE_INFINITY;
+            for (
+                let sampleY = anchor.posY + bodyTopOffsetY;
+                sampleY <= anchor.posY + bodyOffsetY + bodyBottomOffsetY;
+                sampleY += 4
+            ) {
+                const surfaceX = this.wall.wallXAtY(sampleY);
+                if (surfaceX !== undefined) {
+                    clearance = Math.min(clearance, surfaceX - bodyX);
+                }
+            }
+            const score = clearance - Math.abs(n - middleIndex) * 0.5;
+            if (score > bestAnchorScore) {
+                bestAnchorScore = score;
+                armAnchorIndex = anchor.index;
+            }
+        }
+
+        const legAnchorIndex = Math.max(0, armAnchorIndex - legAnchorOffset);
         const armAnchor = defined(this.wall.wallAnchors[armAnchorIndex], "Missing arm anchor");
 
-        posY = armAnchor.posY + this.bodylength * 0.7;
-        const surfaceX = this.wall.wallXAtY(posY) ?? armAnchor.posX;
-        posX = Math.min(armAnchor.posX - this.armlength * 2.0, surfaceX - this.armlength * 2.5);
+        posX = armAnchor.posX - this.armlength * 2.0;
+        posY = armAnchor.posY + bodyOffsetY;
 
         const buttocksPosY = posY + this.bodylength * 0.3;
         const neckPosY = posY - this.bodylength * 0.7;
