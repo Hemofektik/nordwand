@@ -17,16 +17,18 @@ type LimbKind = "hand" | "foot";
 
 const GRAB_RADIUS = 8;
 const REACH_ANGLE_SPEED = 10;
-const COIL_ELBOW_ANGLE = Math.PI * 1.65;
-const HUG_SHOULDER_ANGLE = Math.PI * 0.5;
+const COIL_ELBOW_ANGLE = Math.PI * 1.75;
+const HUG_SHOULDER_ANGLE = Math.PI * 0.32;
+const OVERHEAD_SHOULDER_ANGLE = Math.PI * 0.92;
+const OVERHEAD_ELBOW_ANGLE = Math.PI * 1.04;
 const COIL_HIP_ANGLE = Math.PI * 1.12;
 const COIL_KNEE_ANGLE = Math.PI * 0.5;
-const REACH_ELBOW_ANGLE = Math.PI * 1.08;
-const PUSH_HIP_ANGLE = Math.PI * 1.05;
+const REACH_ELBOW_ANGLE = Math.PI * 1.04;
+const PUSH_HIP_ANGLE = Math.PI;
 const HIGH_KNEE_ANGLE = Math.PI * 0.45;
 const ELBOW_MIN_ANGLE = Math.PI * 1.02;
 const ELBOW_MAX_ANGLE = Math.PI * 1.85;
-const HIP_MIN_ANGLE = Math.PI * 0.95;
+const HIP_MIN_ANGLE = Math.PI * 0.92;
 const HIP_MAX_ANGLE = Math.PI * 1.25;
 const REACH_HIP_ANGLE = Math.PI * 1.55;
 const REACH_HIP_MIN_ANGLE = Math.PI * 1.05;
@@ -34,9 +36,9 @@ const REACH_HIP_MAX_ANGLE = Math.PI * 1.85;
 const KNEE_MIN_ANGLE = Math.PI * 0.35;
 const KNEE_MAX_ANGLE = Math.PI * 0.95;
 const STRAIGHT_SPINE_ANGLE = Math.PI;
-const BODY_PULL = 12;
-const WALL_HUG_DISTANCE = 8;
-const WALL_HUG_STRENGTH = 18;
+const BODY_PULL = 10;
+const WALL_HUG_DISTANCE = 6;
+const WALL_HUG_STRENGTH = 14;
 const MIN_HAND_STEP = 4;
 const MIN_FOOT_STEP = 4;
 const MAX_HAND_STEP = 18;
@@ -50,14 +52,18 @@ const MIN_PUSH_LIFT = 3;
 const PUSH_STRAIGHTEN_DURATION = 0.92;
 const MAX_PUSH_TIME = 1.23;
 const COIL_LEG_LENGTH_FACTOR = 0.92;
-const PUSH_LEG_LENGTH_FACTOR = 0.98;
+const PUSH_LEG_LENGTH_FACTOR = 1.0;
 const MAX_COIL_TIME = 0.45;
 const MAX_REACH_TIME = 2.2;
-const PUSH_LEG_TIGHTNESS = 8;
-const SUPPORT_LEG_TIGHTNESS = 6;
-const FREE_LEG_TIGHTNESS = 8;
-const PLANTED_ARM_TIGHTNESS = 3;
-const FREE_ARM_TIGHTNESS = 8;
+const LIMB_REACH_TIMEOUT = 2;
+const PUSH_LEG_TIGHTNESS = 6;
+const SUPPORT_LEG_TIGHTNESS = 5;
+const FREE_LEG_TIGHTNESS = 6;
+const PLANTED_ARM_TIGHTNESS = 5;
+const FREE_ARM_TIGHTNESS = 5;
+const SPINE_BOTTOM_TIGHTNESS = 12;
+const SPINE_TIGHTNESS = 10;
+const SPINE_HEAD_TIGHTNESS = 8;
 const LIMB_REACH_PULL = 90;
 const LIMB_REACH_TRAVEL = 7;
 
@@ -272,7 +278,12 @@ function poseFreeArms(skeleton: Skeleton, deltaTime: number): number {
         if (skeleton.isGrabbing("hand", side)) {
             continue;
         }
-        accumulatedDelta += poseArm(skeleton, side, COIL_ELBOW_ANGLE, HUG_SHOULDER_ANGLE, deltaTime);
+        accumulatedDelta += poseArm(skeleton, side, OVERHEAD_ELBOW_ANGLE, OVERHEAD_SHOULDER_ANGLE, deltaTime);
+        const neck = originParticle(skeleton, "hand");
+        const hand = skeleton.limbParticle("hand", side);
+        const wallX = skeleton.wall.wallXAtY(neck.posY - skeleton.armlength);
+        const targetX = wallX === undefined ? neck.posX : wallX - WALL_HUG_DISTANCE;
+        travelParticleToward(hand, targetX, neck.posY - skeleton.armlength * 0.95, deltaTime);
     }
     return accumulatedDelta;
 }
@@ -308,15 +319,16 @@ function poseFreeLegs(skeleton: Skeleton, deltaTime: number): number {
 }
 
 function poseSpine(skeleton: Skeleton, deltaTime: number): number {
+    const tightness = [SPINE_BOTTOM_TIGHTNESS, SPINE_TIGHTNESS, SPINE_HEAD_TIGHTNESS];
     let accumulatedDelta = 0;
-    for (const constraintIndex of skeleton.backACIndex) {
+    for (let i = 0; i < skeleton.backACIndex.length; i++) {
         const constraint = defined(
-            skeleton.phys.angularConstraints[constraintIndex],
+            skeleton.phys.angularConstraints[defined(skeleton.backACIndex[i], "Missing back index")],
             "Missing back angular constraint",
         );
         const previous = constraint.targetAngle;
         constraint.targetAngle = moveJointAngle(previous, STRAIGHT_SPINE_ANGLE, deltaTime);
-        constraint.tightnessFactor = 8;
+        constraint.tightnessFactor = tightness[i] ?? SPINE_TIGHTNESS;
         accumulatedDelta += Math.abs(shortestAngleDelta(previous, constraint.targetAngle));
     }
     return accumulatedDelta;
@@ -383,6 +395,7 @@ function pullParticleToward(
     targetY: number,
     desiredDistance: number,
     deltaTime: number,
+    axis: "xy" | "y" = "xy",
 ): void {
     const dx = targetX - particle.posX;
     const dy = targetY - particle.posY;
@@ -392,7 +405,9 @@ function pullParticleToward(
     }
     const error = distance - desiredDistance;
     const strength = BODY_PULL * deltaTime;
-    particle.velX += (dx / distance) * error * strength;
+    if (axis !== "y") {
+        particle.velX += (dx / distance) * error * strength;
+    }
     particle.velY += (dy / distance) * error * strength;
 }
 
@@ -430,7 +445,7 @@ function pullBodyTowardHolds(skeleton: Skeleton, extensionBlend: number, deltaTi
             continue;
         }
         const foot = skeleton.limbParticle("foot", side);
-        pullParticleToward(buttocks, foot.posX, foot.posY, legDistance, deltaTime);
+        pullParticleToward(buttocks, foot.posX, foot.posY, legDistance, deltaTime, "y");
     }
 }
 
@@ -713,6 +728,8 @@ export class ClimbingAI {
     public pushStartButtocksY = 0;
     public coilElapsed = 0;
     public reachElapsed = 0;
+    public footReachElapsed = 0;
+    public timedFootTargetIndex = -1;
 
     public constructor(rope: Rope, wall: Wall, skeleton: Skeleton) {
         this.rope = rope;
@@ -739,6 +756,8 @@ export class ClimbingAI {
         this.targetHandAnchorIndex = -1;
         this.targetFootAnchorIndex = -1;
         this.pushElapsed = 0;
+        this.footReachElapsed = 0;
+        this.timedFootTargetIndex = -1;
         this.coilElapsed = 0;
         this.reachElapsed = 0;
     }
@@ -771,6 +790,7 @@ export class ClimbingAI {
         if (this.targetFootAnchorIndex < 0 && !this.needsHandSeparationRecovery()) {
             poseFreeLegs(this.skeleton, deltaTime);
         }
+        this.tryTimeoutFootReach(deltaTime);
         if (this.needsHandSeparationRecovery()) {
             this.reachElapsed = 0;
             this.climbinState = ClimbingState.Reach;
@@ -814,10 +834,15 @@ export class ClimbingAI {
         }
 
         poseSpine(this.skeleton, deltaTime);
-        poseFreeArms(this.skeleton, deltaTime);
-        if (!this.needsHandSeparationRecovery()) {
+        this.updateReachTargets(deltaTime);
+        this.updateReachLimbAngles(deltaTime);
+        if (this.targetHandAnchorIndex < 0) {
+            poseFreeArms(this.skeleton, deltaTime);
+        }
+        if (this.targetFootAnchorIndex < 0 && !this.needsHandSeparationRecovery()) {
             poseFreeLegs(this.skeleton, deltaTime);
         }
+        this.tryTimeoutFootReach(deltaTime);
 
         if (this.needsHandSeparationRecovery()) {
             this.targetHandAnchorIndex = -1;
@@ -904,8 +929,11 @@ export class ClimbingAI {
         }
 
         const grabbedHand = this.tryGrabLimb("hand");
-        const grabbedFoot = this.needsHandSeparationRecovery() ? false : this.tryGrabLimb("foot");
-        if (!this.needsHandSeparationRecovery()) {
+        let grabbedFoot = this.needsHandSeparationRecovery() ? false : this.tryGrabLimb("foot");
+        if (!grabbedFoot && !this.needsHandSeparationRecovery()) {
+            grabbedFoot = this.tryTimeoutFootReach(deltaTime);
+        }
+        if (!this.needsHandSeparationRecovery() && !grabbedFoot) {
             releaseLowerLimbIfBothPlanted(this.skeleton, "foot");
         }
         if (this.needsHandSeparationRecovery()) {
@@ -926,6 +954,77 @@ export class ClimbingAI {
             return -1;
         }
         return this.pickReachableAnchor(kind);
+    }
+
+    private resetFootReachTimer(): void {
+        this.footReachElapsed = 0;
+        this.timedFootTargetIndex = this.targetFootAnchorIndex;
+    }
+
+    private tryTimeoutFootReach(deltaTime: number): boolean {
+        if (this.needsHandSeparationRecovery()) {
+            this.resetFootReachTimer();
+            return false;
+        }
+
+        const freeSide = this.skeleton.findFreeSide("foot");
+        if (freeSide < 0 || this.targetFootAnchorIndex < 0) {
+            this.resetFootReachTimer();
+            return false;
+        }
+
+        if (this.timedFootTargetIndex !== this.targetFootAnchorIndex) {
+            this.timedFootTargetIndex = this.targetFootAnchorIndex;
+            this.footReachElapsed = 0;
+        }
+
+        this.footReachElapsed += deltaTime;
+        if (this.footReachElapsed < LIMB_REACH_TIMEOUT) {
+            return false;
+        }
+
+        const closestIndex = this.pickClosestReachableFootAnchor(freeSide);
+        if (closestIndex < 0) {
+            this.targetFootAnchorIndex = -1;
+            this.resetFootReachTimer();
+            return false;
+        }
+
+        const closest = this.wall.wallAnchors[closestIndex];
+        if (closest === undefined) {
+            this.resetFootReachTimer();
+            return false;
+        }
+
+        this.skeleton.grab("foot", freeSide, closest);
+        this.targetFootAnchorIndex = -1;
+        this.resetFootReachTimer();
+        return true;
+    }
+
+    private pickClosestReachableFootAnchor(freeSide: number): number {
+        const limb = this.skeleton.limbParticle("foot", freeSide);
+        const occupied = new Set<number>();
+        for (let side = 0; side < 2; side++) {
+            const constraint = this.skeleton.grabConstraint("foot", side);
+            if (constraint.isEnabled) {
+                occupied.add(constraint.wallAnchorIndex);
+            }
+        }
+
+        let bestIndex = -1;
+        let bestDistanceSqr = Number.POSITIVE_INFINITY;
+        for (const anchor of this.wall.wallAnchors) {
+            if (occupied.has(anchor.index)) {
+                continue;
+            }
+            const limbDistanceSqr = distanceSqr(limb.posX, limb.posY, anchor.posX, anchor.posY);
+            if (limbDistanceSqr < bestDistanceSqr) {
+                bestDistanceSqr = limbDistanceSqr;
+                bestIndex = anchor.index;
+            }
+        }
+        return bestIndex;
     }
 
     private plantedHoldYs(kind: LimbKind): number[] {
@@ -1165,6 +1264,7 @@ export class ClimbingAI {
             this.targetHandAnchorIndex = -1;
         } else {
             this.targetFootAnchorIndex = -1;
+            this.resetFootReachTimer();
         }
         return true;
     }

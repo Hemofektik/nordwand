@@ -166,8 +166,9 @@ export class Skeleton {
         const legAnchorIndex = Math.max(0, armAnchorIndex - 8);
         const armAnchor = defined(this.wall.wallAnchors[armAnchorIndex], "Missing arm anchor");
 
-        posX = armAnchor.posX - this.armlength * 2.0;
         posY = armAnchor.posY + this.bodylength * 0.7;
+        const surfaceX = this.wall.wallXAtY(posY) ?? armAnchor.posX;
+        posX = Math.min(armAnchor.posX - this.armlength * 2.0, surfaceX - this.armlength * 2.5);
 
         const buttocksPosY = posY + this.bodylength * 0.3;
         const neckPosY = posY - this.bodylength * 0.7;
@@ -230,8 +231,8 @@ export class Skeleton {
         const backAC2 = this.phys.createAngularConstraint(backIndex, neckIndex, headIndex);
         this.backACIndex.push(backAC0, backAC1, backAC2);
 
-        defined(this.phys.angularConstraints[backAC0], "Missing back angular constraint 0").tightnessFactor = 8.0;
-        defined(this.phys.angularConstraints[backAC1], "Missing back angular constraint 1").tightnessFactor = 8.0;
+        defined(this.phys.angularConstraints[backAC0], "Missing back angular constraint 0").tightnessFactor = 12.0;
+        defined(this.phys.angularConstraints[backAC1], "Missing back angular constraint 1").tightnessFactor = 10.0;
         defined(this.phys.angularConstraints[backAC2], "Missing back angular constraint 2").tightnessFactor = 8.0;
 
         this.shoulderACIndex.push(this.phys.createAngularConstraint(backIndex, neckIndex, leftelbowIndex));
@@ -253,10 +254,10 @@ export class Skeleton {
             defined(this.phys.angularConstraints[kneeIndex], "Missing knee angular constraint").tightnessFactor = 6.0;
         }
         for (const shoulderIndex of this.shoulderACIndex) {
-            defined(this.phys.angularConstraints[shoulderIndex], "Missing shoulder angular constraint").tightnessFactor = 3.0;
+            defined(this.phys.angularConstraints[shoulderIndex], "Missing shoulder angular constraint").tightnessFactor = 5.0;
         }
         for (const elbowIndex of this.elbowACIndex) {
-            defined(this.phys.angularConstraints[elbowIndex], "Missing elbow angular constraint").tightnessFactor = 3.0;
+            defined(this.phys.angularConstraints[elbowIndex], "Missing elbow angular constraint").tightnessFactor = 5.0;
         }
 
         const leftHandConstraintAnchorIndex = this.phys.createFixedConstraint(leftwristIndex);

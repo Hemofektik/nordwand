@@ -112,9 +112,19 @@ export class Rope {
         let numParticlesForRope = 0;
         let lastParticleIndex = 0;
 
-        const anchorStartIndex = 20;
-        const wa0 = defined(this.wall.wallAnchors[anchorStartIndex + 0], "Missing rope start wall anchor");
-        const wa1 = defined(this.wall.wallAnchors[anchorStartIndex + 10], "Missing rope mid wall anchor");
+        const firstAnchor = defined(this.wall.wallAnchors[0], "Missing first wall anchor for rope");
+        const secondAnchor = defined(this.wall.wallAnchors[1], "Missing second wall anchor for rope");
+        const anchorSpacing = Math.hypot(
+            secondAnchor.posX - firstAnchor.posX,
+            secondAnchor.posY - firstAnchor.posY,
+        );
+        const anchorStartIndex = Math.round(200 / anchorSpacing);
+        const wa0 = defined(this.wall.wallAnchors[anchorStartIndex], "Missing rope start wall anchor");
+        const pelvis = defined(
+            this.phys.particleStates[this.skeleton.pelvisParticleIndex],
+            "Missing pelvis particle for rope",
+        );
+        const wa1 = findNearbyWallAnchor(this.wall, (wa0.posY + pelvis.posY) * 0.5);
 
         {
             const deltaX = wa1.posX - wa0.posX;
