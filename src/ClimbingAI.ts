@@ -130,7 +130,7 @@ function currentConstraintAngle(skeleton: Skeleton, constraintIndex: number): nu
     );
     return wrapAngle(
         Math.atan2(state0.posY - state1.posY, state0.posX - state1.posX) -
-            Math.atan2(state2.posY - state1.posY, state2.posX - state1.posX),
+        Math.atan2(state2.posY - state1.posY, state2.posX - state1.posX),
     );
 }
 
