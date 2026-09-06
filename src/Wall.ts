@@ -3,6 +3,10 @@ import type { PhysicalParticleState } from "./Physics.ts";
 
 let noiseIndex = 0;
 
+export function resetWallNoise(): void {
+    noiseIndex = 0;
+}
+
 export function rand(): number {
     let x = noiseIndex;
     noiseIndex++;
@@ -222,6 +226,7 @@ export class Wall {
     }
 
     private initialize(initialPosX: number, initialPosY: number): void {
+        resetWallNoise();
         this.originX = initialPosX;
         this.cursorX = initialPosX + 45;
         this.cursorY = initialPosY + 300;

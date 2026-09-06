@@ -361,7 +361,7 @@ export class Game {
         if (!this.paused && this.wall && this.phys && this.player) {
             this.extendWallAhead();
             this.wall.update(this.frame_delta);
-            this.phys.update(this.frame_delta);
+            // Player.update substeps physics + AI at a fixed 1/120 timestep.
             this.player.update(this.frame_delta);
         }
 

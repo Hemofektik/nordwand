@@ -13,18 +13,18 @@ import type { Wall } from "./Wall.ts";
 const PIXELS_TO_METERS = 0.05;
 const METERS_TO_PIXELS = 1 / PIXELS_TO_METERS;
 const GRAVITY_PX = 80;
-const TIME_STEP = 0.004;
-const VELOCITY_ITERATIONS = 8;
-const POSITION_ITERATIONS = 3;
-const DISTANCE_FREQUENCY_HZ = 12;
-const DISTANCE_DAMPING_RATIO = 0.7;
+const TIME_STEP = 0.002;
+const VELOCITY_ITERATIONS = 16;
+const POSITION_ITERATIONS = 6;
+const DISTANCE_FREQUENCY_HZ = 24;
+const DISTANCE_DAMPING_RATIO = 0.9;
 const PARTICLE_RADIUS_PX = 3;
 const LINEAR_DAMPING = 0.2;
 const BOTTOM_PX = 500;
 const POS_EPSILON_PX = 0.05;
 const VEL_EPSILON_PX = 0.05;
-const ANGULAR_TIGHTNESS = 1000;
-const ANGULAR_DAMPING = 100;
+const ANGULAR_TIGHTNESS = 1600;
+const ANGULAR_DAMPING = 80;
 
 export class PhysicalParticleState {
     public posX = 0;
@@ -108,6 +108,7 @@ export class SpringPhysics {
     private readonly bodies: b2Body[] = [];
     private readonly distanceJoints: b2DistanceJoint[] = [];
     private readonly pinned: boolean[] = [];
+    private readonly wallCollides: boolean[] = [];
     private readonly massData = new b2MassData();
     private readonly particleShape = new b2CircleShape(toMeters(PARTICLE_RADIUS_PX));
 
@@ -144,7 +145,17 @@ export class SpringPhysics {
         this.applyMass(body, pps.mass);
         this.bodies.push(body);
         this.pinned.push(false);
+        this.wallCollides.push(true);
         return this.particleStates.length - 1;
+    }
+
+    /**
+     * Enables or disables wall collision for a particle. Limb particles
+     * (hands, feet, elbows, knees) should not collide with the wall so the
+     * climbing IK can move them freely along the surface.
+     */
+    public setWallCollision(particleIndex: number, collides: boolean): void {
+        this.wallCollides[particleIndex] = collides;
     }
 
     public createDistanceConstraint(particleIndex0: number, particleIndex1: number): number {
@@ -535,7 +546,7 @@ export class SpringPhysics {
 
     private collideWallAndFloor(): void {
         for (let i = 0; i < this.particleStates.length; i++) {
-            if (this.pinned[i] === true) {
+            if (this.pinned[i] === true || this.wallCollides[i] !== true) {
                 continue;
             }
 

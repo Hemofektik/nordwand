@@ -60,6 +60,14 @@ function createBodyParticle(phys: SpringPhysics, posX: number, posY: number, mas
     return particleIndex;
 }
 
+function createLimbParticle(phys: SpringPhysics, posX: number, posY: number, mass: number): number {
+    const particleIndex = createBodyParticle(phys, posX, posY, mass);
+    // Limb particles pass through the wall: collision would fight the
+    // climbing IK and make reaching anchors unnecessarily difficult.
+    phys.setWallCollision(particleIndex, false);
+    return particleIndex;
+}
+
 export class Skeleton {
     public phys: SpringPhysics;
     public wall: Wall;
@@ -215,12 +223,12 @@ export class Skeleton {
         this.buttocksParticleIndex = buttocksIndex;
         this.neckParticleIndex = neckIndex;
 
-        const leftelbowIndex = createBodyParticle(this.phys, posX + this.armlength * 0.5, neckPosY, bodyParticleMass * 0.5);
-        const leftwristIndex = createBodyParticle(this.phys, posX + this.armlength * 1.0, neckPosY, bodyParticleMass * 0.5);
+        const leftelbowIndex = createLimbParticle(this.phys, posX + this.armlength * 0.5, neckPosY, bodyParticleMass * 0.5);
+        const leftwristIndex = createLimbParticle(this.phys, posX + this.armlength * 1.0, neckPosY, bodyParticleMass * 0.5);
         this.handParticleIndex.push(leftwristIndex);
 
-        const leftkneeIndex = createBodyParticle(this.phys, posX + this.leglength * 0.5, buttocksPosY, bodyParticleMass * 0.5);
-        const leftankleIndex = createBodyParticle(
+        const leftkneeIndex = createLimbParticle(this.phys, posX + this.leglength * 0.5, buttocksPosY, bodyParticleMass * 0.5);
+        const leftankleIndex = createLimbParticle(
             this.phys,
             posX + this.leglength * 0.5,
             buttocksPosY + this.leglength * 0.5,
@@ -228,12 +236,12 @@ export class Skeleton {
         );
         this.footParticleIndex.push(leftankleIndex);
 
-        const rightelbowIndex = createBodyParticle(this.phys, posX + this.armlength * 0.5, neckPosY, bodyParticleMass * 0.5);
-        const rightwristIndex = createBodyParticle(this.phys, posX + this.armlength * 1.0, neckPosY, bodyParticleMass * 0.5);
+        const rightelbowIndex = createLimbParticle(this.phys, posX + this.armlength * 0.5, neckPosY, bodyParticleMass * 0.5);
+        const rightwristIndex = createLimbParticle(this.phys, posX + this.armlength * 1.0, neckPosY, bodyParticleMass * 0.5);
         this.handParticleIndex.push(rightwristIndex);
 
-        const rightkneeIndex = createBodyParticle(this.phys, posX + this.leglength * 0.5, buttocksPosY, bodyParticleMass * 0.5);
-        const rightankleIndex = createBodyParticle(
+        const rightkneeIndex = createLimbParticle(this.phys, posX + this.leglength * 0.5, buttocksPosY, bodyParticleMass * 0.5);
+        const rightankleIndex = createLimbParticle(
             this.phys,
             posX + this.leglength * 0.5,
             buttocksPosY + this.leglength * 0.5,
