@@ -16,13 +16,17 @@ import type { Skeleton } from "./Skeleton.ts";
 import {
     ClimberMotor,
     FOOT_TO_LOWEST_HAND_GAP,
+    FULLY_STRAIGHT_KNEE_ANGLE,
     HAND_MIN_ABOVE_NECK,
     KNEE_MIN_ANGLE,
     REACH_FRACTION,
     REACH_FRACTION_RELAXED,
+    currentConstraintAngle,
+    shortestAngleDelta,
     type LimbKind,
     type MotorStatus,
 } from "./ClimberMotor.ts";
+import { defined } from "./assert.ts";
 
 export type ClimberPhase = "LegReach" | "Push" | "HandReach" | "PullUp" | "Idle";
 
@@ -441,7 +445,19 @@ export class Climber {
                 ? this.wall.wallAnchors[this.skeleton.grabConstraint("hand", partnerSide).wallAnchorIndex]?.posY
                 : undefined;
             const floorY = ownAnchorY ?? (partnerY !== undefined ? partnerY : undefined);
-            const minAboveY = floorY !== undefined ? floorY - 5 : this.neck().posY - HAND_MIN_ABOVE_NECK;
+            // Floor relaxation on the ladder: when the body is COMPRESSED
+            // (feet jammed against the 15px gap limit below the hands), the
+            // next hold cluster is above the floor ceiling but out of reach
+            // until the arms extend - a deadlock the PullUp cannot break
+            // (the body is a rigid bridge; verified on seed 101 at 18s).
+            // Letting the floor DROP a little on ladder steps lets the hand
+            // latch a nearby lower/sideways anchor, which re-opens the
+            // geometry. The feet-below-hands gap rule still holds (it is
+            // enforced in the foot pick, and the foot targets move up after).
+            const floorRelax = relaxed ? 12 : 0;
+            const minAboveY = floorY !== undefined
+                ? floorY - 5 + floorRelax
+                : this.neck().posY - HAND_MIN_ABOVE_NECK;
             this.target = this.pickHandTarget(reachSide, minAboveY, relaxed);
             if (this.target === undefined && !relaxed) {
                 // Ladder step 2 (§8): a failed pick at normal reach relaxes
@@ -531,6 +547,19 @@ export class Climber {
                     this.beginPhase("PullUp");
                     return;
                 }
+                // The haul is a NO-OP (neck frozen): the body is a rigid
+                // bridge - arms pull up, legs brace down, both at full
+                // tension. Hauling harder does nothing; the escape is to
+                // RE-POSITION THE FEET, which the loop never attempts
+                // (verified on seed 404 at 110s: neck frozen at -510.9 while
+                // valid foot candidates sat 5-23px away). Substitute to
+                // LegReach instead of Idling.
+                this.log("stall: PullUp is a no-op (neck frozen) -> re-position feet");
+                this.pendingSubstitution = undefined;
+                this.substitutionCount = 0;
+                this.ladderStep = 0;
+                this.beginPhase("LegReach");
+                return;
             }
             // Substitution already tried (even relaxed) and found nothing:
             // Idle (§8.4).
@@ -543,19 +572,21 @@ export class Climber {
         this.substitutionCount++;
         this.log(`substitution: ${failedMove} move has no candidates -> ${failedMove === "leg" ? "HandReach" : "leg push"} (ladder ${this.ladderStep}, streak ${this.substitutionCount})`);
         if (failedMove === "hand") {
-            // The body hangs from the planted arms; a leg push cannot raise
-            // it further when the arms are near-straight (the arms tether the
-            // body - verified on seed 505 where a push held the body frozen
-            // for 5s). A PULL on the planted arms hauls the body up toward
-            // the hands, closing the gap to the next hold cluster; the drive
-            // leg assists by extending at the same time. The hold scales with
-            // the substitution streak: a single 1.5s haul often leaves the
-            // target a fraction of a px out of reach, and the pick re-runs
-            // before the body is high enough - repeated failures must haul
-            // longer (verified on seed 101, a80 at 28px vs reach 27.6).
-            this.pullHoldUntil = this.phaseElapsed + 1.5 + 0.75 * (this.substitutionCount - 1);
-            this.lastPullStartNeckY = this.neck().posY;
-            this.beginPhase("PullUp");
+            // Choose the substitution by body state:
+            // - Legs BENT (knee well short of straight): a PUSH extends them
+            //   and raises the body toward the next cluster. This is the
+            //   natural escape from a compressed bridge (verified on seed
+            //   101: knee1 at 123deg, push raises the neck to a72).
+            // - Legs EXTENDED: a push has nothing left to extend; the body
+            //   hangs from the arms and must PULL (haul) instead.
+            if (this.legsCanPush()) {
+                this.pushHoldUntil = this.phaseElapsed + 1.2;
+                this.beginPhase("Push");
+            } else {
+                this.pullHoldUntil = this.phaseElapsed + 1.5 + 0.75 * (this.substitutionCount - 1);
+                this.lastPullStartNeckY = this.neck().posY;
+                this.beginPhase("PullUp");
+            }
         } else {
             // For a failed foot pick, the arm reach matters, not the haul:
             // a leg push raises the body toward new foot anchors.
@@ -567,6 +598,23 @@ export class Climber {
     // ------------------------------------------------------------------
     // Filter chain (§7)
     // ------------------------------------------------------------------
+
+    /**
+     * True when at least one planted leg is bent enough to push the body
+     * higher (knee well short of straight).
+     */
+    private legsCanPush(): boolean {
+        for (let side = 0; side < 2; side++) {
+            if (!this.skeleton.isGrabbing("foot", side)) continue;
+            const kneeIndex = defined(this.skeleton.kneeJointACIndex[side], "Missing knee index");
+            const angle = currentConstraintAngle(this.skeleton, kneeIndex);
+            const bend = Math.abs(shortestAngleDelta(angle, FULLY_STRAIGHT_KNEE_ANGLE));
+            if (bend > 0.35) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     private occupiedIndices(): Set<number> {
         const occupied = new Set<number>();
@@ -612,7 +660,7 @@ export class Climber {
         return best;
     }
 
-    private pickFootTarget(_side: number, relaxed: boolean): WallAnchor | undefined {
+    private pickFootTarget(side: number, relaxed: boolean): WallAnchor | undefined {
         const occupied = this.occupiedIndices();
         const lowestHandY = this.lowestHandAnchorY();
         const origin = this.origin("foot");
@@ -623,24 +671,42 @@ export class Climber {
         // narrow when the body is extended - it excluded anchors 30-40px
         // above the foot that the leg reaches easily, forcing downward
         // repositioning steps (verified on seed 101: feet stuck at y=360
-        // while a53/a54 rose 5-10px away). Preference is the CLOSEST
-        // candidate in the band - a small step, not a max-reach fling.
+        // while a53/a54 rose 5-10px away). Preference is the HIGHEST
+        // candidate in the band - a small step that still climbs.
         const leapRefY = origin.posY;
+        // The REACHING FOOT's own anchor: small steps (<= FOOT_STEP_RADIUS)
+        // from it are valid even when the butt has drifted away and its
+        // reach envelope rejects them (verified on seed 101: a64/a65 sit
+        // 1-5px from the planted foot but 30-31px from the drifted butt).
+        const releasedIndex = this.footReleasedAnchor[side];
+        const ownAnchor = this.skeleton.isGrabbing("foot", side)
+            ? this.wall.wallAnchors[this.skeleton.grabConstraint("foot", side).wallAnchorIndex]
+            : releasedIndex !== undefined && releasedIndex >= 0
+                ? this.wall.wallAnchors[releasedIndex]
+                : undefined;
         // Reach envelope matches the motor's: the end particle can latch
         // within LATCH_RADIUS of the anchor, so the origin-reach band is
         // boneSum*fraction + LATCH_RADIUS.
         const reach = this.boneSum("foot") * (relaxed ? REACH_FRACTION_RELAXED : REACH_FRACTION) + 6;
-        const gap = FOOT_TO_LOWEST_HAND_GAP;
+        // Gap rule relaxation: when the ladder is active the body is
+        // COMPRESSED - the feet are jammed against the 15px gap limit while
+        // the hands have already climbed. Keeping the full gap pins the feet
+        // forever (verified on seed 101: feet at a65, lowest hand a71, a66
+        // blocked by 4px). Shrinking the gap on the ladder lets the feet
+        // follow the hands up; the feet-below-hands ordering still holds.
+        const gap = FOOT_TO_LOWEST_HAND_GAP - 6;
         // The knee fold limit: anchors closer to the origin than this can
         // never be latched (the knee cannot fold tighter than KNEE_MIN).
         const bone = this.boneSum("foot") / 2;
         const minFold = 2 * bone * Math.sin(KNEE_MIN_ANGLE / 2);
+        // Small-step radius from the foot's own anchor (hybrid reach).
+        const FOOT_STEP_RADIUS = 15;
         let best: WallAnchor | undefined;
         let bestDist = Number.POSITIVE_INFINITY;
-        // Closest candidate that rises at most FOOT_LEAP_MAX_RISE above the
-        // reaching foot's own anchor (2-3 anchor step).
+        // Highest candidate within the +-15px band around the butt: the band
+        // caps the leap, highest-in-band makes the feet climb.
         let cappedBest: WallAnchor | undefined;
-        let cappedBestDist = Number.POSITIVE_INFINITY;
+        let cappedBestY = Number.POSITIVE_INFINITY;
         for (const anchor of this.wall.wallAnchors) {
             if (occupied.has(anchor.index) || this.motor.isBlacklisted(anchor.index)) continue;
             if (this.releasedThisCycle.has(anchor.index)) continue;
@@ -648,40 +714,58 @@ export class Climber {
             // (below = larger y). Feet never overtake hands.
             if (lowestHandY !== Number.POSITIVE_INFINITY && anchor.posY < lowestHandY + gap) continue;
             // Rule 1 (reachability) - a BAND: the IK cannot fold tighter than
-            // minFold nor extend beyond reach.
+            // minFold nor extend beyond reach. HYBRID: an anchor within a
+            // small step of the foot's own anchor is also valid - the leg
+            // pivots at the hip but the foot only travels a short distance
+            // for a step, and the butt drifts away from the feet as the body
+            // bridges (verified on seed 101: a64/a65 1-5px from the planted
+            // foot but 30-31px from the drifted butt).
             const dx = anchor.posX - origin.posX;
             const dy = anchor.posY - origin.posY;
             const distSqr = dx * dx + dy * dy;
-            if (distSqr > reach * reach) continue;
-            if (distSqr < minFold * minFold) continue;
+            let withinReach = distSqr <= reach * reach && distSqr >= minFold * minFold;
+            if (!withinReach && ownAnchor !== undefined) {
+                const sdx = anchor.posX - ownAnchor.posX;
+                const sdy = anchor.posY - ownAnchor.posY;
+                const stepDist = Math.hypot(sdx, sdy);
+                if (stepDist <= FOOT_STEP_RADIUS && stepDist >= minFold * 0.5) {
+                    withinReach = true;
+                }
+            }
+            if (!withinReach) continue;
             // Rule 3 (CoM) is checked by the invariant contract after the move.
-            // Preference with a leap cap measured from the foot's own anchor:
-            // among valid candidates prefer the CLOSEST anchor that still
-            // rises (smaller y = higher) - a small step up, not a max-reach
-            // fling. The old "highest within the cap" preference maxed out
-            // the cap on every step, which read as a huge leap even though
-            // the cap held. If nothing rises within the cap, take the
-            // SHORTEST leap in-band (not the highest anchor): the old
-            // fallback flung the foot to the highest in-reach anchor - a
-            // 47px leap with 11 closer alternatives available (verified on
-            // seed 101, a61 -> a73).
-            if (cappedBest === undefined) {
+            // Preference: the HIGHEST anchor within the +-15px band around
+            // the butt OR around the foot's own anchor (hybrid-admitted
+            // anchors band against their own reference - a64 at y=286 was
+            // outside the butt band [289,319] but a perfect step from the
+            // planted foot, and excluding it caused an endless a61<->a63
+            // shuffle while the hands starved). If nothing fits either
+            // band, take the SHORTEST leap (not the highest anchor): the
+            // old fallback flung the foot 47px with 11 closer alternatives
+            // available (verified on seed 101).
+            const bandRefY = ownAnchor !== undefined
+                ? Math.min(leapRefY, ownAnchor.posY)
+                : leapRefY;
+            if (anchor.posY >= bandRefY - FOOT_LEAP_MAX_RISE && anchor.posY <= bandRefY + FOOT_LEAP_MAX_RISE) {
+                if (cappedBest === undefined || anchor.posY < cappedBestY) {
+                    cappedBest = anchor;
+                    cappedBestY = anchor.posY;
+                }
+            } else if (cappedBest === undefined) {
                 const dist = Math.sqrt(distSqr);
                 if (best === undefined || dist < bestDist) {
                     best = anchor;
                     bestDist = dist;
                 }
             }
-            if (anchor.posY >= leapRefY - FOOT_LEAP_MAX_RISE && anchor.posY <= leapRefY + FOOT_LEAP_MAX_RISE) {
-                const dist = Math.sqrt(distSqr);
-                if (cappedBest === undefined || dist < cappedBestDist) {
-                    cappedBest = anchor;
-                    cappedBestDist = dist;
-                }
-            }
+        }
+        if (cappedBest !== undefined) {
+            best = cappedBest;
         }
         if (best !== undefined) {
             this.log(`foot target: ${best.index} (y=${best.posY.toFixed(0)}, relaxed=${relaxed})`);
+        } else {
+            this.log(`foot pick: no candidates (butt=(${origin.posX.toFixed(0)},${origin.posY.toFixed(0)}) band=[${(leapRefY - FOOT_LEAP_MAX_RISE).toFixed(0)},${(leapRefY + FOOT_LEAP_MAX_RISE).toFixed(0)}] reach=${reach.toFixed(0)} lowestHandY=${lowestHandY === Number.POSITIVE_INFINITY ? "-" : lowestHandY.toFixed(0)})`);
         }
         return best;
     }
