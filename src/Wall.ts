@@ -1,23 +1,33 @@
 import type { Camera } from "./Camera.ts";
 import type { PhysicalParticleState } from "./Physics.ts";
 
-let noiseIndex = 0;
+/**
+ * Per-wall seeded noise state. The global counter previously used made every
+ * wall in a session identical (constructor reset it) and coupled unrelated
+ * walls; per-wall state makes walls deterministic and independent
+ * (concept/adr/0005-seeded-wall.md).
+ */
+class WallNoise {
+    private counter: number;
 
-export function resetWallNoise(): void {
-    noiseIndex = 0;
-}
+    public constructor(seed: number) {
+        // Avoid 0: the hash of 0 is degenerate for some generator families.
+        // Any nonzero 32-bit seed works; 0 maps to a fixed arbitrary value.
+        this.counter = seed === 0 ? 0x9e3779b9 : seed >>> 0;
+    }
 
-export function rand(): number {
-    let x = noiseIndex;
-    noiseIndex++;
+    public rand(): number {
+        let x = this.counter;
+        this.counter = (this.counter + 1) >>> 0;
 
-    x = ((x << 13) ^ x) & 0xffffffff;
-    return x * ((x * x * 15731 + 789221) & 0xffffffff) + 1376312589;
-}
+        x = ((x << 13) ^ x) & 0xffffffff;
+        return (x * ((x * x * 15731 + 789221) & 0xffffffff) + 1376312589) | 0;
+    }
 
-export function randF(): number {
-    const r = rand();
-    return (0x7fffffff & r) / 0x7fffffff;
+    public randF(): number {
+        const r = this.rand();
+        return (0x7fffffff & r) / 0x7fffffff;
+    }
 }
 
 export class WallSegment {
@@ -85,12 +95,14 @@ const MAX_SEGMENTS_PER_EXTEND = 64;
 export class Wall {
     public wallSegments: WallSegment[] = [];
     public wallAnchors: WallAnchor[] = [];
+    private readonly noise: WallNoise;
     private originX = 0;
     private cursorX = 0;
     private cursorY = 0;
     private segmentDirRad = -Math.PI * 0.5;
 
-    public constructor(posX: number, posY: number) {
+    public constructor(posX: number, posY: number, seed?: number) {
+        this.noise = new WallNoise(seed ?? Math.floor(Math.random() * 0x80000000));
         this.initialize(posX, posY);
     }
 
@@ -226,7 +238,6 @@ export class Wall {
     }
 
     private initialize(initialPosX: number, initialPosY: number): void {
-        resetWallNoise();
         this.originX = initialPosX;
         this.cursorX = initialPosX + 45;
         this.cursorY = initialPosY + 300;
@@ -243,7 +254,7 @@ export class Wall {
         const variationStrength = Math.max(0.0, 1.0 - Math.abs(variationDir));
 
         let dirRadOffset = 0.0;
-        dirRadOffset += (randF() - 0.5) * variationStrength * Math.PI * 1.0;
+        dirRadOffset += (this.noise.randF() - 0.5) * variationStrength * Math.PI * 1.0;
         dirRadOffset += variationDir * Math.PI * 0.2;
 
         if (this.segmentDirRad + dirRadOffset > -Math.PI * 0.1) {
@@ -265,7 +276,7 @@ export class Wall {
             ws.posX = startX + (this.cursorX - startX) * t;
             ws.posY = startY + (this.cursorY - startY) * t;
             if (i < VERTEX_FREQUENCY_SCALE) {
-                ws.posX += (randF() - 0.5) * HIGH_FREQUENCY_AMPLITUDE;
+                ws.posX += (this.noise.randF() - 0.5) * HIGH_FREQUENCY_AMPLITUDE;
             }
             this.wallSegments.push(ws);
 

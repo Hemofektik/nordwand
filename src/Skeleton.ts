@@ -86,6 +86,9 @@ export class Skeleton {
     public pelvisParticleIndex = -1;
     public buttocksParticleIndex = -1;
     public neckParticleIndex = -1;
+    /** Index of the back particle (between pelvis and neck); part of the
+     *  CoM proxy (concept/climbing-plan.md §7.4). */
+    public backParticleIndex = -1;
 
     public handParticleIndex: number[] = [];
     public footParticleIndex: number[] = [];
@@ -166,6 +169,44 @@ export class Skeleton {
         return defined(this.phys.particleStates[particleIndex], `Missing ${kind} particle state`);
     }
 
+    /** Nearest anchor strictly above a given y (smaller y = higher). */
+    private nearestAnchorAbove(posX: number, posY: number, aboveY: number, exclude: Set<number>): number {
+        let best = -1;
+        let bestDistanceSqr = Number.POSITIVE_INFINITY;
+        for (const anchor of this.wall.wallAnchors) {
+            if (exclude.has(anchor.index) || anchor.posY >= aboveY) {
+                continue;
+            }
+            const deltaX = posX - anchor.posX;
+            const deltaY = posY - anchor.posY;
+            const distanceSqr = deltaX * deltaX + deltaY * deltaY;
+            if (distanceSqr < bestDistanceSqr) {
+                bestDistanceSqr = distanceSqr;
+                best = anchor.index;
+            }
+        }
+        return best;
+    }
+
+    /** Nearest anchor strictly below a given y (larger y = lower). */
+    private nearestAnchorBelow(posX: number, posY: number, belowY: number, exclude: Set<number>): number {
+        let best = -1;
+        let bestDistanceSqr = Number.POSITIVE_INFINITY;
+        for (const anchor of this.wall.wallAnchors) {
+            if (exclude.has(anchor.index) || anchor.posY <= belowY) {
+                continue;
+            }
+            const deltaX = posX - anchor.posX;
+            const deltaY = posY - anchor.posY;
+            const distanceSqr = deltaX * deltaX + deltaY * deltaY;
+            if (distanceSqr < bestDistanceSqr) {
+                bestDistanceSqr = distanceSqr;
+                best = anchor.index;
+            }
+        }
+        return best;
+    }
+
     private initialize(posX: number, posY: number): void {
         const bodyParticleMass = 0.1;
         const anchors = this.wall.getNearbyAnchors(posX, posY, 300);
@@ -222,6 +263,7 @@ export class Skeleton {
         this.pelvisParticleIndex = pelvisIndex;
         this.buttocksParticleIndex = buttocksIndex;
         this.neckParticleIndex = neckIndex;
+        this.backParticleIndex = backIndex;
 
         const leftelbowIndex = createLimbParticle(this.phys, posX + this.armlength * 0.5, neckPosY, bodyParticleMass * 0.5);
         const leftwristIndex = createLimbParticle(this.phys, posX + this.armlength * 1.0, neckPosY, bodyParticleMass * 0.5);
@@ -324,18 +366,95 @@ export class Skeleton {
         this.footGrabConstraintIndex.push(this.phys.createFixedConstraint(leftankleIndex));
         this.footGrabConstraintIndex.push(rightankleConstraintAnchorIndex);
 
+        // All four limbs start latched (concept/climbing-plan.md §3): the
+        // Climber's cycle begins by releasing a limb itself, and symmetric
+        // starts make the curated-seed hangs reproducible.
+        // Spawn anchors must also satisfy the gap rule (§7.1): every foot
+        // anchor at least 15px below the lowest hand anchor.
+        const gap = 15;
+
+        // 1. Left hand at the chosen arm anchor.
+        const leftHandAnchor = defined(this.wall.wallAnchors[armAnchorIndex], "Missing arm anchor");
+
+        // 2. Right hand: nearest anchor to its spawn pose that is at least
+        //    gap px ABOVE the left hand anchor (so feet can fit below both).
+        const rightWrist = defined(this.phys.particleStates[rightwristIndex], "Missing right wrist");
+        const rightHandAnchorIndex = this.nearestAnchorAbove(
+            rightWrist.posX,
+            rightWrist.posY,
+            leftHandAnchor.posY + gap,
+            new Set([armAnchorIndex]),
+        );
+        const rightHandResolvedIndex = rightHandAnchorIndex >= 0
+            ? rightHandAnchorIndex
+            : armAnchorIndex;
+        const rightHandAnchor = defined(
+            this.wall.wallAnchors[rightHandResolvedIndex],
+            "Missing right hand anchor",
+        );
+        const lowestHandY = Math.min(leftHandAnchor.posY, rightHandAnchor.posY);
+        const rightHandConstraint = defined(
+            this.phys.fixedConstraints[defined(this.handGrabConstraintIndex[1], "Missing right hand grab")],
+            "Missing right hand grab constraint",
+        );
+        rightHandConstraint.posX = rightHandAnchor.posX;
+        rightHandConstraint.posY = rightHandAnchor.posY;
+        rightHandConstraint.wallAnchorIndex = rightHandAnchor.index;
+
+        // 3. Right foot: nearest anchor to its spawn pose at least gap px
+        //    below the lowest hand anchor.
+        const rightFootOld = defined(this.wall.wallAnchors[legAnchorIndex], "Missing leg wall anchor");
+        const rightFootResolvedIndex = this.nearestAnchorBelow(
+            rightFootOld.posX,
+            rightFootOld.posY,
+            lowestHandY + gap,
+            new Set<number>(),
+        );
+        const rightFootAnchor = defined(
+            rightFootResolvedIndex >= 0 ? this.wall.wallAnchors[rightFootResolvedIndex] : rightFootOld,
+            "Missing leg wall anchor",
+        );
+
+        // 4. Left foot: nearest anchor to its spawn pose, at least gap px
+        //    below the lowest hand anchor and distinct from the right foot's.
+        const leftAnkle = defined(this.phys.particleStates[leftankleIndex], "Missing left ankle");
+        const leftFootAnchorIndex = this.nearestAnchorBelow(
+            leftAnkle.posX,
+            leftAnkle.posY,
+            lowestHandY + gap,
+            new Set([rightFootAnchor.index]),
+        );
+        const leftFootResolvedIndex = leftFootAnchorIndex >= 0
+            ? leftFootAnchorIndex
+            : rightFootAnchor.index;
+        const leftFootAnchor = defined(
+            this.wall.wallAnchors[leftFootResolvedIndex],
+            "Missing left foot anchor",
+        );
+        const leftFootConstraint = defined(
+            this.phys.fixedConstraints[defined(this.footGrabConstraintIndex[0], "Missing left foot grab")],
+            "Missing left foot grab constraint",
+        );
+        leftFootConstraint.posX = leftFootAnchor.posX;
+        leftFootConstraint.posY = leftFootAnchor.posY;
+        leftFootConstraint.wallAnchorIndex = leftFootAnchor.index;
+
         defined(this.phys.fixedConstraints[defined(this.handGrabConstraintIndex[0], "Missing left hand grab")], "Missing left hand grab constraint").isEnabled =
             true;
         defined(this.phys.fixedConstraints[defined(this.handGrabConstraintIndex[1], "Missing right hand grab")], "Missing right hand grab constraint").isEnabled =
-            false;
+            true;
         defined(this.phys.fixedConstraints[defined(this.footGrabConstraintIndex[0], "Missing left foot grab")], "Missing left foot grab constraint").isEnabled =
-            false;
+            true;
         defined(this.phys.fixedConstraints[defined(this.footGrabConstraintIndex[1], "Missing right foot grab")], "Missing right foot grab constraint").isEnabled =
             true;
 
         defined(this.phys.fixedConstraints[defined(this.handGrabConstraintIndex[0], "Missing left hand grab")], "Missing left hand grab constraint").wallAnchorIndex =
-            armAnchorIndex;
+            leftHandAnchor.index;
+        defined(this.phys.fixedConstraints[defined(this.handGrabConstraintIndex[1], "Missing right hand grab")], "Missing right hand grab constraint").wallAnchorIndex =
+            rightHandAnchor.index;
+        defined(this.phys.fixedConstraints[defined(this.footGrabConstraintIndex[0], "Missing left foot grab")], "Missing left foot grab constraint").wallAnchorIndex =
+            leftFootAnchor.index;
         defined(this.phys.fixedConstraints[defined(this.footGrabConstraintIndex[1], "Missing right foot grab")], "Missing right foot grab constraint").wallAnchorIndex =
-            legAnchorIndex;
+            rightFootAnchor.index;
     }
 }

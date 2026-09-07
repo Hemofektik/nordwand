@@ -8,7 +8,7 @@
 
 **Nordwand** is a physics-driven climbing prototype. You hang from a generated rock face and try not to let go. The mockup above is the look the game is aiming for: a quiet alpine north wall, pixel clouds, and a climber who is never more than one hold away from empty air.
 
-The current build is the simulation underneath that picture — spring-particle physics, a ragdoll skeleton, a pixel rope, and a climbing AI that raises and reaches for the next anchor.
+The current build is the simulation underneath that picture — spring-particle physics, a ragdoll skeleton, a pixel rope, and a two-layer climbing system (decision + motor) that walks the wall hold by hold.
 
 ## Play
 
@@ -42,7 +42,7 @@ Every wall is generated from a noisy walk of segments, then studded with anchors
 
 Distance springs keep limbs the right length. Angular constraints hold posture. Gravity pulls at 80 units. The climber and rope collide with the rock — they stay on the air side of the wall. If you let go, there is nothing left but the rope and the fall.
 
-The climbing AI cycles through **raise** (flex a planted arm, extend a planted leg) and **reach** (free hand and free foot grab the next reachable anchors). Limbs leapfrog: after a grab, the lower hold is released so the next move can start.
+The **Climber** walks a fixed three-phase rotation: **LegReach** (the free foot flexes up to a higher anchor, latches), **Push** (the drive leg extends and the body rises while the latched arms adapt their angles), **HandReach** (the lowest hand reaches above the head and latches in extension). Targets come from a hard filter chain — reachability, feet-stay-below-hands, center-of-mass near the wall — never from scoring. Phases end on physical events (a latch, a reached extension), and a stall ladder (re-filter → relaxed reach → substitute move → hold) never forces a grab or releases a planted limb. The full behavior spec lives in `concept/climbing-plan.md`.
 
 ## Project
 
@@ -61,7 +61,8 @@ src/
   Wall.ts          procedural face and anchors
   Skeleton.ts      body, limbs, grabs
   Rope.ts          pixel rope
-  ClimbingAI.ts    raise / reach
+  Climber.ts       decision layer: phases, filter chain, stall ladder
+  ClimberMotor.ts  motor layer: move API, IK, angle animation
   Camera.ts        pixel-snapped world camera
   MusicPlayer.ts   songs and SFX
   PixelSprite.ts   nearest-neighbor scaled sprites
