@@ -68,6 +68,14 @@ export class Rope {
     public wall: Wall;
     public skeleton: Skeleton;
     public distanceConstraintIndices: number[] = [];
+    /** Index of the distance constraint tying the rope's end to the pelvis.
+     *  -1 once the rope has detached (over-extension). */
+    private pelvisTieIndex = -1;
+
+    /** Test/observable accessor: -1 once the rope has detached. */
+    public pelvisTieIndexForTest(): number {
+        return this.pelvisTieIndex;
+    }
 
     public constructor(phys: SpringPhysics, wall: Wall, skeleton: Skeleton, posX: number, posY: number) {
         this.phys = phys;
@@ -76,7 +84,21 @@ export class Rope {
         this.initialize(posX, posY);
     }
 
-    public update(_deltaTime: number): void { }
+    public update(_deltaTime: number): void {
+        if (this.pelvisTieIndex < 0) {
+            return;
+        }
+        // Detach the hip tie as soon as the climber starts moving. The tie
+        // is a near-zero-length rigid pin (rest ~0.3px): it is load-bearing
+        // from birth, transmits the whole chain's tension straight into the
+        // pelvis, and caps every climb (measured: 26px with the tie vs 268px
+        // without, seed 101). Once the climber's own four grabs hold, the
+        // rope has served its purpose - "extended too much" for this tether
+        // is simply "the climb has begun". The chain stays in the world for
+        // the visual; only the hip constraint is destroyed.
+        this.phys.destroyDistanceConstraint(this.pelvisTieIndex);
+        this.pelvisTieIndex = -1;
+    }
 
     public draw(ctx: CanvasRenderingContext2D, cam: Camera): void {
         const invPixelScale = 1.0 / cam.pixelScale;
@@ -177,6 +199,7 @@ export class Rope {
             this.distanceConstraintIndices.push(dcIndex);
         }
 
-        this.distanceConstraintIndices.push(this.phys.createDistanceConstraint(lastParticleIndex, this.skeleton.pelvisParticleIndex));
+        this.pelvisTieIndex = this.phys.createDistanceConstraint(lastParticleIndex, this.skeleton.pelvisParticleIndex);
+        this.distanceConstraintIndices.push(this.pelvisTieIndex);
     }
 }

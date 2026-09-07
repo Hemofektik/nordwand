@@ -210,6 +210,19 @@ export class SpringPhysics {
         return this.fixedConstraints.length - 1;
     }
 
+    /**
+     * Destroys a distance constraint: removes its Box2D joint and leaves the
+     * data slot empty (index-based consumers already tolerate holes).
+     */
+    public destroyDistanceConstraint(constraintIndex: number): void {
+        const joint = this.distanceJoints[constraintIndex];
+        if (joint !== undefined) {
+            this.world.DestroyJoint(joint);
+            this.distanceJoints[constraintIndex] = undefined as unknown as b2DistanceJoint;
+        }
+        this.distanceConstraints[constraintIndex] = undefined as unknown as DistanceConstraint;
+    }
+
     public createAngularConstraint(particleIndex0: number, particleIndex1: number, particleIndex2: number): number {
         const particle0 = this.particleStates[particleIndex0];
         const particle1 = this.particleStates[particleIndex1];
