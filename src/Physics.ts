@@ -552,14 +552,17 @@ export class SpringPhysics {
             this.applyVelocityDelta(body2, state2, fDirX2 - state2.velX * speedDamping, fDirY2 - state2.velY * speedDamping);
 
             // Hard joint limits: if the actual angle is outside the allowed
-            // window, drive it back toward the violated limit. Stiff (3x
-            // target tracking) with the same velocity damping the target
-            // term uses, and CAPPED: a purely proportional correction at a
-            // deep violation (e.g. 150deg past the limit) commands an
-            // explosive impulse that flings the joint into worse violations
-            // (measured: inversion rate rose from 0.8% to 15% on seed 101).
-            // The cap bounds the per-step correction; repeated application
-            // walks the joint back into range within a few steps.
+            // window, drive it back toward the violated limit with a stiff
+            // (3x), capped restoring impulse. The IK targets are never out
+            // of window (measured: 0/4802 backwards knee targets), so
+            // violations are transient load excursions; the impulse walks
+            // them back within a few steps. Measured with the strict pi
+            // knee ceiling: residual violations are rare (44/4802 samples)
+            // and shallow (<=15deg past straight; deeper readings were a
+            // +-180deg wrap artifact of near-straight knees). Elaborate
+            // additions - velocity stops, positional projections, tangential
+            // cancellation - all destabilize the soft-body climb dynamics
+            // and stall it (each measured separately).
             if (angularC.minAngle !== undefined && angularC.maxAngle !== undefined) {
                 const limitDelta = this.jointLimitDelta(currentAngle, angularC.minAngle, angularC.maxAngle);
                 if (limitDelta !== 0) {
@@ -574,6 +577,11 @@ export class SpringPhysics {
                     const fDirY1 = dirX1 * invDistance1;
                     const fDirX2 = dirY2 * invDistance2;
                     const fDirY2 = -dirX2 * invDistance2;
+                    // The velocity damping term is ESSENTIAL: without it the
+                    // limit correction fights push load undamped, injects
+                    // energy, and the knee pops deep past straight (measured:
+                    // worst violation 150deg past straight undamped vs <=15deg
+                    // damped).
                     this.applyVelocityDelta(body0, state0, fDirX0 - state0.velX * speedDamping, fDirY0 - state0.velY * speedDamping);
                     this.applyVelocityDelta(body1, state1, fDirX1 - state1.velX * speedDamping, fDirY1 - state1.velY * speedDamping);
                     this.applyVelocityDelta(body2, state2, fDirX2 - state2.velX * speedDamping, fDirY2 - state2.velY * speedDamping);

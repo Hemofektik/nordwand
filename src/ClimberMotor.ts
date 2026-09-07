@@ -66,14 +66,16 @@ const STRAIGHT_SPINE_ANGLE = Math.PI;
 //  signed bend = ~91deg backwards, hips rotated the full circle) ---
 /** Hip angle window. Convention (measured): hip angle = pi with the thigh
  *  hanging straight down, < pi = forward swing (toward the wall), > pi =
- *  backward swing, 0 = thigh pointing straight up (impossible). Anatomy:
- *  hip flexion allows the thigh up-forward to ~45deg from vertical (with a
- *  bent knee), so HIP_MIN = 0.25pi; everything tighter starves high foot
- *  reaches (measured on seed 202). The forbidden regions are the
- *  straight-up-forward quadrant near 0 (the shoulder-like rotation the
- *  user sees) and the far-behind swing past 1.99pi. */
+ *  backward swing, 0 = thigh pointing straight up-forward (impossible).
+ *  Only the MIN limit is anatomical here: hip flexion past ~45deg from
+ *  vertical up-forward is the shoulder-like rotation the user sees. The
+ *  MAX side stays open (2pi = never violated): thigh-up-behind is a
+ *  legitimate high-step pose, and a ceiling near 2pi makes the positional
+ *  projection fire constantly on legal poses - with the foot pinned it
+ *  then rotates the pelvis and destabilizes the body (measured: seed 101
+ *  dropped from 276px to 55px neck rise). */
 const HIP_MIN_ANGLE = Math.PI * 0.25;
-const HIP_MAX_ANGLE = Math.PI * 1.99;
+const HIP_MAX_ANGLE = Math.PI * 2;
 
 // --- angular solver coupling (validated) ---
 const PLANTED_TIGHTNESS = 10;
@@ -260,15 +262,15 @@ export class ClimberMotor {
             hip.minAngle = HIP_MIN_ANGLE;
             hip.maxAngle = HIP_MAX_ANGLE;
             // The knee's anatomical constraint is one-directional bend: the
-            // angle (in [0,2pi)) must stay in (0, ~210deg). Angles below the
-            // IK's KNEE_MIN are deep-but-natural folds (a loaded knee
-            // legitimately compresses past 63deg - a hard floor there fights
-            // the squat and stalls the climb, measured on seed 303), so the
-            // floor only guards the fold singularity at 0. The ceiling
-            // forbids the inverted region (210..360deg = bends past straight
-            // on the wrong side).
+            // angle (in [0,2pi)) must stay in (0, pi]. ANY angle past pi is
+            // a visible backwards bend - the earlier 1.17pi tolerance still
+            // read as knees bending both ways (user-verified in browser).
+            // Angles below the IK's KNEE_MIN are deep-but-natural folds (a
+            // loaded knee legitimately compresses past 63deg - a hard floor
+            // there fights the squat and stalls the climb, measured on seed
+            // 303), so the floor only guards the fold singularity at 0.
             knee.minAngle = Math.PI * 0.05;
-            knee.maxAngle = Math.PI * 1.17;
+            knee.maxAngle = Math.PI;
         }
     }
 
