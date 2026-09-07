@@ -21,6 +21,7 @@ import {
     KNEE_MIN_ANGLE,
     REACH_FRACTION,
     REACH_FRACTION_RELAXED,
+    REACH_MARGIN,
     currentConstraintAngle,
     shortestAngleDelta,
     type LimbKind,
@@ -684,10 +685,12 @@ export class Climber {
             : releasedIndex !== undefined && releasedIndex >= 0
                 ? this.wall.wallAnchors[releasedIndex]
                 : undefined;
-        // Reach envelope matches the motor's: the end particle can latch
-        // within LATCH_RADIUS of the anchor, so the origin-reach band is
-        // boneSum*fraction + LATCH_RADIUS.
-        const reach = this.boneSum("foot") * (relaxed ? REACH_FRACTION_RELAXED : REACH_FRACTION) + 6;
+        // Reach envelope matches the motor's: boneSum*fraction + REACH_MARGIN
+        // (shared constant - the motor's gate and this pick MUST agree, a
+        // mismatch makes the pick choose targets the gate then rejects
+        // forever). The end particle latches within LATCH_RADIUS, which is
+        // smaller and deliberately decoupled.
+        const reach = this.boneSum("foot") * (relaxed ? REACH_FRACTION_RELAXED : REACH_FRACTION) + REACH_MARGIN;
         // Gap rule relaxation: when the ladder is active the body is
         // COMPRESSED - the feet are jammed against the 15px gap limit while
         // the hands have already climbed. Keeping the full gap pins the feet
@@ -778,7 +781,7 @@ export class Climber {
         // not the load-stretched ones. A stretched envelope made the pick
         // accept targets the arm could never reach (verified on seed 101:
         // a76 at 27.7 vs true IK reach 25.5 - the hand froze 8px short).
-        const reach = this.boneSum("hand") * (relaxed ? REACH_FRACTION_RELAXED : REACH_FRACTION) + 6;
+        const reach = this.boneSum("hand") * (relaxed ? REACH_FRACTION_RELAXED : REACH_FRACTION) + REACH_MARGIN;
         let best: WallAnchor | undefined;
         let bestY = Number.POSITIVE_INFINITY;
         for (const anchor of this.wall.wallAnchors) {
@@ -817,7 +820,7 @@ export class Climber {
         // to it (the extended limb hauls the body back). Only declare stale
         // when the target is beyond the relaxed reach PLUS the limb's own
         // length - i.e. genuinely untouchable.
-        const maxReach = this.boneSum(kind) * REACH_FRACTION_RELAXED + 6 + this.boneSum(kind);
+        const maxReach = this.boneSum(kind) * REACH_FRACTION_RELAXED + REACH_MARGIN + this.boneSum(kind);
         const dx = target.posX - origin.posX;
         const dy = target.posY - origin.posY;
         return dx * dx + dy * dy > maxReach * maxReach;

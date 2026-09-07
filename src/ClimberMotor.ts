@@ -23,7 +23,21 @@ export type LimbKind = "hand" | "foot";
 // --- constants (concept/climbing-plan.md §7.1) ---
 export const REACH_FRACTION = 0.9;
 export const REACH_FRACTION_RELAXED = 1.0;
-export const LATCH_RADIUS = 8;
+/** Shared reach-envelope margin: BOTH the target pick (Climber) and the
+ *  motor's envelope gate add this to boneSum*fraction. They MUST agree -
+ *  the gate was boneSum*fraction + LATCH_RADIUS, so shrinking the latch
+ *  snap (8 -> 5) silently tightened the gate below the pick's envelope
+ *  and the climber looped forever: pick chooses a target at d=25.5, gate
+ *  rejects it at 25.0, PullUp, re-pick, same target (measured on seed
+ *  101). The snap distance is a separate concern (LATCH_RADIUS). */
+export const REACH_MARGIN = 6;
+/** Latch distance: the IK converges well, so the snap can be tight -
+ *  latching at 8px visibly teleported the limb onto the hold well before
+ *  it arrived (user-observed). 5px is the tightest value the soft-body
+ *  jitter reliably enters (3px starves latches: seed 101 dropped to 3
+ *  latches/12s and 36px/40s). ONLY used for the latch check since the
+ *  envelope gate decoupling above. */
+export const LATCH_RADIUS = 5;
 export const FOOT_TO_LOWEST_HAND_GAP = 15;
 export const HAND_MIN_ABOVE_NECK = 5;
 export const COM_MAX_WALL_DISTANCE = 35;
@@ -482,7 +496,7 @@ export class ClimberMotor {
         // achievable by command. A stretched envelope accepted targets the
         // arm could never reach (verified on seed 101: a76 at 27.7 vs true
         // IK reach 25.5 - the hand froze 8px short for the whole timeout).
-        const reach = (proximal + distal) * REACH_FRACTION_RELAXED + LATCH_RADIUS;
+        const reach = (proximal + distal) * REACH_FRACTION_RELAXED + REACH_MARGIN;
         // Envelope gate: only for STARTING a move. Once a move to this anchor
         // is in flight, the reaching limb itself displaces the body (the
         // swing carries the origin out past the envelope transiently), and
@@ -607,7 +621,6 @@ export class ClimberMotor {
             origin.posX, origin.posY, target.posX, target.posY,
             proximal, distal,
             kneeParticle.posX, kneeParticle.posY,
-            root.posX, root.posY,
         );
         const desiredHip = jointAngle(root.posX, root.posY, origin.posX, origin.posY, joint.x, joint.y);
         const desiredKnee = jointAngle(origin.posX, origin.posY, joint.x, joint.y, target.posX, target.posY);
@@ -618,12 +631,8 @@ export class ClimberMotor {
     /**
      * Two-bone leg IK with admissibility filtering: of the two bend-side
      * solutions, only those whose knee angle lands inside
-     * [KNEE_MIN, KNEE_MAX] AND whose hip angle lands inside
-     * [HIP_MIN, HIP_MAX] are candidates; continuity (nearest to the
-     * current knee) picks among them. Filtering the hip here matters: the
-     * solver's hard hip limit cannot fight an IK that keeps requesting
-     * out-of-window poses - the joint then oscillates at the limit and the
-     * reach stalls (measured on seed 101).
+     * [KNEE_MIN, KNEE_MAX] are candidates; continuity (nearest to the
+     * current knee) picks among them.
      */
     private admissibleLegJoint(
         originX: number,
@@ -634,8 +643,6 @@ export class ClimberMotor {
         distal: number,
         currentKneeX: number,
         currentKneeY: number,
-        rootX: number,
-        rootY: number,
     ): { x: number; y: number } {
         let reachX = targetX - originX;
         let reachY = targetY - originY;
@@ -736,7 +743,6 @@ export class ClimberMotor {
             origin.posX, origin.posY, target.posX, target.posY,
             proximal, distal,
             kneeParticle.posX, kneeParticle.posY,
-            root.posX, root.posY,
         );
         const desiredHip = jointAngle(root.posX, root.posY, origin.posX, origin.posY, joint.x, joint.y);
         const desiredKnee = jointAngle(origin.posX, origin.posY, joint.x, joint.y, target.posX, target.posY);
