@@ -866,9 +866,86 @@ export class Climber {
         this.motor.cancelMove();
     }
 
-    /** Debug draw hook (behind the D key). Currently a no-op; the motor's
-     *  targets and the CoM proxy can be visualized here later (§10). */
-    public draw(_ctx: CanvasRenderingContext2D, _cam: import("./Camera.ts").Camera): void { }
+    /** Debug draw hook (behind the D key). Highlights the current reach
+     *  target (anchor + envelope circle) and the limb moving toward it, so
+     *  IK failures ("gave up on an anchor it could have reached") are
+     *  visually diagnosable. */
+    public draw(ctx: CanvasRenderingContext2D, cam: import("./Camera.ts").Camera): void {
+        const target = this.target;
+        if (target === undefined) {
+            return;
+        }
+        const kind = this.phase === "HandReach" ? "hand" : "foot";
+        const origin = this.origin(kind);
+        const boneSum = this.boneSum(kind);
+
+        // 1. Reach envelope around the limb origin: anything inside the
+        //    relaxed envelope IS reachable - if the highlighted anchor sits
+        //    inside this circle when the climber gives up, the IK failed on
+        //    a reachable anchor.
+        const reach = boneSum * REACH_FRACTION_RELAXED + 6;
+        ctx.strokeStyle = "rgba(80, 160, 255, 0.45)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(
+            cam.world_to_viewport_x_pixel(origin.posX),
+            cam.world_to_viewport_y_pixel(origin.posY),
+            reach * cam.pixelScale,
+            0,
+            Math.PI * 2,
+        );
+        ctx.stroke();
+
+        // 2. Origin-to-target guide line.
+        ctx.strokeStyle = "rgba(255, 255, 0, 0.8)";
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.moveTo(
+            cam.world_to_viewport_x_pixel(origin.posX),
+            cam.world_to_viewport_y_pixel(origin.posY),
+        );
+        ctx.lineTo(
+            cam.world_to_viewport_x_pixel(target.posX),
+            cam.world_to_viewport_y_pixel(target.posY),
+        );
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // 3. Target anchor: pulsing crosshair (world-space square, stable
+        //    size on screen).
+        const tx = cam.world_to_viewport_x_pixel(target.posX);
+        const ty = cam.world_to_viewport_y_pixel(target.posY);
+        const pulse = 2 + Math.sin(this.clock * 6) * 1;
+        const s = (4 + pulse) * cam.pixelScale;
+        ctx.strokeStyle = "rgba(0, 255, 80, 0.9)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(tx - s, ty - s);
+        ctx.lineTo(tx + s, ty + s);
+        ctx.moveTo(tx + s, ty - s);
+        ctx.lineTo(tx - s, ty + s);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.rect(tx - s, ty - s, s * 2, s * 2);
+        ctx.stroke();
+
+        // 4. The reaching limb: bright ring around the moving hand/foot.
+        const limbIndex = kind === "hand"
+            ? this.skeleton.handParticleIndex[this.handReachSide >= 0 ? this.handReachSide : 0]
+            : this.skeleton.footParticleIndex[1 - this.driveLegSide >= 0 && 1 - this.driveLegSide <= 1 ? 1 - this.driveLegSide : 0];
+        if (limbIndex !== undefined) {
+            const limb = this.phys.particleStates[limbIndex];
+            if (limb !== undefined) {
+                const lx = cam.world_to_viewport_x_pixel(limb.posX);
+                const ly = cam.world_to_viewport_y_pixel(limb.posY);
+                ctx.strokeStyle = "rgba(0, 255, 80, 0.9)";
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(lx, ly, 5 * cam.pixelScale, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+        }
+    }
 
     private log(message: string): void {
         console.log(`[climber] ${message}`);
