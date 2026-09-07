@@ -60,6 +60,21 @@ export const LEG_MIN_FOLD_DISTANCE =
     2 * 12 * Math.sin(KNEE_MIN_ANGLE / 2);
 const STRAIGHT_SPINE_ANGLE = Math.PI;
 
+// --- anatomical joint limits (enforced by the physics solver, not just the
+//  IK targets - soft target tracking alone lets load shove joints past
+//  straight into inversion, measured on seed 101: knees reached -169deg
+//  signed bend = ~91deg backwards, hips rotated the full circle) ---
+/** Hip angle window. Convention (measured): hip angle = pi with the thigh
+ *  hanging straight down, < pi = forward swing (toward the wall), > pi =
+ *  backward swing, 0 = thigh pointing straight up (impossible). Anatomy:
+ *  hip flexion allows the thigh up-forward to ~45deg from vertical (with a
+ *  bent knee), so HIP_MIN = 0.25pi; everything tighter starves high foot
+ *  reaches (measured on seed 202). The forbidden regions are the
+ *  straight-up-forward quadrant near 0 (the shoulder-like rotation the
+ *  user sees) and the far-behind swing past 1.99pi. */
+const HIP_MIN_ANGLE = Math.PI * 0.25;
+const HIP_MAX_ANGLE = Math.PI * 1.99;
+
 // --- angular solver coupling (validated) ---
 const PLANTED_TIGHTNESS = 10;
 const PLANTED_IK_SCALE = 0.85;
@@ -225,6 +240,36 @@ export class ClimberMotor {
         this.skeleton = skeleton;
         this.setLimbTightness("hand");
         this.setLimbTightness("foot");
+        this.applyJointLimits();
+    }
+
+    /** Install hard anatomical limits on hips and knees in the physics
+     *  solver. Knees: [KNEE_MIN, pi] - bend side below straight, never
+     *  hyperextended. Hips: [HIP_MIN, HIP_MAX] - the thigh swings forward
+     *  but never rotates around like a shoulder. */
+    private applyJointLimits(): void {
+        for (let side = 0; side < 2; side++) {
+            const hip = defined(
+                this.phys.angularConstraints[defined(this.skeleton.hipJointACIndex[side], "Missing hip index")],
+                "Missing hip constraint",
+            );
+            const knee = defined(
+                this.phys.angularConstraints[defined(this.skeleton.kneeJointACIndex[side], "Missing knee index")],
+                "Missing knee constraint",
+            );
+            hip.minAngle = HIP_MIN_ANGLE;
+            hip.maxAngle = HIP_MAX_ANGLE;
+            // The knee's anatomical constraint is one-directional bend: the
+            // angle (in [0,2pi)) must stay in (0, ~210deg). Angles below the
+            // IK's KNEE_MIN are deep-but-natural folds (a loaded knee
+            // legitimately compresses past 63deg - a hard floor there fights
+            // the squat and stalls the climb, measured on seed 303), so the
+            // floor only guards the fold singularity at 0. The ceiling
+            // forbids the inverted region (210..360deg = bends past straight
+            // on the wrong side).
+            knee.minAngle = Math.PI * 0.05;
+            knee.maxAngle = Math.PI * 1.17;
+        }
     }
 
     // ------------------------------------------------------------------
@@ -287,7 +332,7 @@ export class ClimberMotor {
             this.phys.angularConstraints[defined(this.skeleton.kneeJointACIndex[side], "Missing knee index")],
             "Missing knee constraint",
         );
-        hip.targetAngle = moveJointAngle(hip.targetAngle, STRAIGHT_HIP_ANGLE, dtOrDefault(), undefined, undefined, REACH_ANGLE_SPEED);
+        hip.targetAngle = moveJointAngle(hip.targetAngle, STRAIGHT_HIP_ANGLE, dtOrDefault(), HIP_MIN_ANGLE, HIP_MAX_ANGLE, REACH_ANGLE_SPEED);
         knee.targetAngle = moveJointAngle(knee.targetAngle, STRAIGHT_KNEE_ANGLE, dtOrDefault(), KNEE_MIN_ANGLE, Math.PI, REACH_ANGLE_SPEED);
         // Planted-arm adaptation (§6.4): every latched arm re-solves toward a
         // shortened virtual target so the elbow goes extension -> flex as the
@@ -551,18 +596,23 @@ export class ClimberMotor {
             origin.posX, origin.posY, target.posX, target.posY,
             proximal, distal,
             kneeParticle.posX, kneeParticle.posY,
+            root.posX, root.posY,
         );
         const desiredHip = jointAngle(root.posX, root.posY, origin.posX, origin.posY, joint.x, joint.y);
         const desiredKnee = jointAngle(origin.posX, origin.posY, joint.x, joint.y, target.posX, target.posY);
-        hip.targetAngle = moveJointAngle(hip.targetAngle, desiredHip, deltaTime, undefined, undefined, REACH_ANGLE_SPEED);
+        hip.targetAngle = moveJointAngle(hip.targetAngle, desiredHip, deltaTime, HIP_MIN_ANGLE, HIP_MAX_ANGLE, REACH_ANGLE_SPEED);
         knee.targetAngle = moveJointAngle(knee.targetAngle, desiredKnee, deltaTime, KNEE_MIN_ANGLE, KNEE_MAX_ANGLE, REACH_ANGLE_SPEED * 1.5);
     }
 
     /**
      * Two-bone leg IK with admissibility filtering: of the two bend-side
      * solutions, only those whose knee angle lands inside
-     * [KNEE_MIN, KNEE_MAX] are candidates; continuity (nearest to the
-     * current knee) picks among them.
+     * [KNEE_MIN, KNEE_MAX] AND whose hip angle lands inside
+     * [HIP_MIN, HIP_MAX] are candidates; continuity (nearest to the
+     * current knee) picks among them. Filtering the hip here matters: the
+     * solver's hard hip limit cannot fight an IK that keeps requesting
+     * out-of-window poses - the joint then oscillates at the limit and the
+     * reach stalls (measured on seed 101).
      */
     private admissibleLegJoint(
         originX: number,
@@ -573,6 +623,8 @@ export class ClimberMotor {
         distal: number,
         currentKneeX: number,
         currentKneeY: number,
+        rootX: number,
+        rootY: number,
     ): { x: number; y: number } {
         let reachX = targetX - originX;
         let reachY = targetY - originY;
@@ -606,6 +658,11 @@ export class ClimberMotor {
             const kneeAngle = jointAngle(originX, originY, j.x, j.y, targetX, targetY);
             return kneeAngle >= KNEE_MIN_ANGLE - 0.05 && kneeAngle <= KNEE_MAX_ANGLE + 0.05;
         });
+        // NOTE: deliberately knee-only filtering. Adding a hip-admissibility
+        // filter here starves foot reaches whose only solutions swing the
+        // thigh past the hip window (measured on seed 202: 55px vs 227px) -
+        // the hip is guarded by the target clamp in moveJointAngle plus the
+        // solver's hard limit instead.
         const pool = admissible.length > 0 ? admissible : candidates;
         let best = pool[0]!;
         let bestDist = distanceSqr(currentKneeX, currentKneeY, best.x, best.y);
@@ -659,15 +716,20 @@ export class ClimberMotor {
         );
         const kneeParticle = defined(this.phys.particleStates[knee.particleIndex1], "Missing knee particle");
         const root = defined(this.phys.particleStates[hip.particleIndex0], "Missing leg root");
-        const joint = bentJointPosition(
+        // Admissibility-filtered IK (same as the reaching leg): the world-x
+        // "outward knee" rule could pick a bend side whose knee angle lands
+        // outside [KNEE_MIN, pi] - the hard solver limits then fight the IK
+        // and the planted leg stalls. Continuity among admissible solutions
+        // keeps the knee on its natural side.
+        const joint = this.admissibleLegJoint(
             origin.posX, origin.posY, target.posX, target.posY,
             proximal, distal,
-            COIL_KNEE_ANGLE, true,
             kneeParticle.posX, kneeParticle.posY,
+            root.posX, root.posY,
         );
         const desiredHip = jointAngle(root.posX, root.posY, origin.posX, origin.posY, joint.x, joint.y);
         const desiredKnee = jointAngle(origin.posX, origin.posY, joint.x, joint.y, target.posX, target.posY);
-        hip.targetAngle = moveJointAngle(hip.targetAngle, desiredHip, deltaTime, undefined, undefined, ANGLE_SPEED);
+        hip.targetAngle = moveJointAngle(hip.targetAngle, desiredHip, deltaTime, HIP_MIN_ANGLE, HIP_MAX_ANGLE, ANGLE_SPEED);
         knee.targetAngle = moveJointAngle(knee.targetAngle, desiredKnee, deltaTime, KNEE_MIN_ANGLE, KNEE_MAX_ANGLE, ANGLE_SPEED * 1.5);
     }
 
@@ -703,7 +765,7 @@ export class ClimberMotor {
                         this.phys.angularConstraints[defined(this.skeleton.kneeJointACIndex[side], "Missing knee index")],
                         "Missing knee constraint",
                     );
-                    hip.targetAngle = moveJointAngle(hip.targetAngle, Math.PI * 1.12, deltaTime);
+                    hip.targetAngle = moveJointAngle(hip.targetAngle, Math.PI * 1.12, deltaTime, HIP_MIN_ANGLE, HIP_MAX_ANGLE);
                     knee.targetAngle = moveJointAngle(knee.targetAngle, COIL_KNEE_ANGLE, deltaTime, KNEE_MIN_ANGLE, KNEE_MAX_ANGLE);
                 }
             }

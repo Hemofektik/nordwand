@@ -25,6 +25,13 @@ const POS_EPSILON_PX = 0.05;
 const VEL_EPSILON_PX = 0.05;
 const ANGULAR_TIGHTNESS = 1600;
 const ANGULAR_DAMPING = 80;
+/** Max per-step angular correction a joint limit may command (radians).
+ *  Bounds the impulse when a joint is far outside its window. */
+const LIMIT_MAX_CORRECTION = 0.15;
+
+function clampAbs(value: number, limit: number): number {
+    return Math.min(limit, Math.max(-limit, value));
+}
 
 export class PhysicalParticleState {
     public posX = 0;
@@ -64,6 +71,12 @@ export class AngularConstraint {
     public lastAngle = 0;
     public targetAngle = 0;
     public tightnessFactor = 1;
+    /** Hard anatomical limits (radians, [0, 2pi) convention). When set, the
+     *  solver applies a corrective impulse whenever the actual joint angle
+     *  leaves [minAngle, maxAngle] - no target-tracking can push the joint
+     *  past its range. Undefined = unconstrained (e.g. shoulders). */
+    public minAngle: number | undefined = undefined;
+    public maxAngle: number | undefined = undefined;
 }
 
 function wrapAngle0To2Pi(angle: number): number {
@@ -538,8 +551,51 @@ export class SpringPhysics {
             this.applyVelocityDelta(body1, state1, fDirX1 - state1.velX * speedDamping, fDirY1 - state1.velY * speedDamping);
             this.applyVelocityDelta(body2, state2, fDirX2 - state2.velX * speedDamping, fDirY2 - state2.velY * speedDamping);
 
+            // Hard joint limits: if the actual angle is outside the allowed
+            // window, drive it back toward the violated limit. Stiff (3x
+            // target tracking) with the same velocity damping the target
+            // term uses, and CAPPED: a purely proportional correction at a
+            // deep violation (e.g. 150deg past the limit) commands an
+            // explosive impulse that flings the joint into worse violations
+            // (measured: inversion rate rose from 0.8% to 15% on seed 101).
+            // The cap bounds the per-step correction; repeated application
+            // walks the joint back into range within a few steps.
+            if (angularC.minAngle !== undefined && angularC.maxAngle !== undefined) {
+                const limitDelta = this.jointLimitDelta(currentAngle, angularC.minAngle, angularC.maxAngle);
+                if (limitDelta !== 0) {
+                    const cappedDelta = clampAbs(limitDelta, LIMIT_MAX_CORRECTION);
+                    const strength = cappedDelta * ANGULAR_TIGHTNESS * dt * angularC.tightnessFactor * 3;
+                    const invDistance0 = (strength * state0.inverseMass) / length0;
+                    const invDistance1 = ((strength * state1.inverseMass) / length1) * 2.0;
+                    const invDistance2 = (strength * state2.inverseMass) / length2;
+                    const fDirX0 = -dirY0 * invDistance0;
+                    const fDirY0 = dirX0 * invDistance0;
+                    const fDirX1 = -dirY1 * invDistance1;
+                    const fDirY1 = dirX1 * invDistance1;
+                    const fDirX2 = dirY2 * invDistance2;
+                    const fDirY2 = -dirX2 * invDistance2;
+                    this.applyVelocityDelta(body0, state0, fDirX0 - state0.velX * speedDamping, fDirY0 - state0.velY * speedDamping);
+                    this.applyVelocityDelta(body1, state1, fDirX1 - state1.velX * speedDamping, fDirY1 - state1.velY * speedDamping);
+                    this.applyVelocityDelta(body2, state2, fDirX2 - state2.velX * speedDamping, fDirY2 - state2.velY * speedDamping);
+                }
+            }
+
             angularC.lastAngle = currentAngle;
         }
+    }
+
+    /** Signed angular correction to bring the angle back into the allowed
+     *  window: 0 when inside, positive when below minAngle (angle must
+     *  increase), negative when above maxAngle. Matches the target-tracking
+     *  impulse convention (positive delta = increase angle). */
+    private jointLimitDelta(currentAngle: number, minAngle: number, maxAngle: number): number {
+        if (currentAngle < minAngle) {
+            return wrapAngleNegPiToPi(minAngle - currentAngle);
+        }
+        if (currentAngle > maxAngle) {
+            return wrapAngleNegPiToPi(maxAngle - currentAngle);
+        }
+        return 0;
     }
 
     private applyVelocityDelta(body: b2Body, state: PhysicalParticleState, deltaVelX: number, deltaVelY: number): void {
