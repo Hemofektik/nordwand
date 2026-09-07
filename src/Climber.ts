@@ -60,6 +60,12 @@ export class Climber {
     private pushHoldUntil = 0;
     /** Minimum remaining time for a substitution pull-up (planted-arm haul). */
     private pullHoldUntil = 0;
+    /** Neck y when the last PullUp started: if the next PullUp starts with the
+     *  neck HIGHER (smaller y), the haul is making progress and the stall
+     *  ladder must not Idle - the climber is slowly winning (verified on
+     *  seed 404: the gap to the next cluster closed 31.9 -> 28.3 over 6s of
+     *  pulling, but the streak-3 Idle killed the pull each time). */
+    private lastPullStartNeckY = Number.POSITIVE_INFINITY;
     /** y of the hand anchor released this cycle (for Q14 relaxation). */
     /** Consecutive substitutions without a successful latch (§8.4). */
     private substitutionCount = 0;
@@ -506,6 +512,26 @@ export class Climber {
             }
         }
         if (this.pendingSubstitution === failedMove && this.ladderStep >= 3) {
+            // Substitution already tried (even relaxed) and found nothing.
+            // BUT: if the repeated PullUps have been RAISING the neck, the
+            // haul is working - the climber is slowly winning a long stretch.
+            // Idling here would throw away real progress (verified on seed
+            // 404: gap 31.9 -> 28.3 over 6s of pulling, then Idle reset it).
+            // Only Idle when the neck is NOT higher than at the previous
+            // PullUp start (the haul has stopped helping).
+            if (failedMove === "hand") {
+                const neckY = this.neck().posY;
+                if (neckY < this.lastPullStartNeckY - 0.5) {
+                    const gained = this.lastPullStartNeckY - neckY;
+                    this.lastPullStartNeckY = neckY;
+                    this.substitutionCount = 1;
+                    this.ladderStep = Math.min(this.ladderStep, 2);
+                    this.log(`stall: but the neck rose ${gained.toFixed(1)}px since the last PullUp -> keep hauling`);
+                    this.pullHoldUntil = this.phaseElapsed + 1.5 + 0.75 * (this.substitutionCount - 1);
+                    this.beginPhase("PullUp");
+                    return;
+                }
+            }
             // Substitution already tried (even relaxed) and found nothing:
             // Idle (§8.4).
             this.log(`stall: no candidates for ${failedMove} or substitution -> Idle`);
@@ -528,6 +554,7 @@ export class Climber {
             // before the body is high enough - repeated failures must haul
             // longer (verified on seed 101, a80 at 28px vs reach 27.6).
             this.pullHoldUntil = this.phaseElapsed + 1.5 + 0.75 * (this.substitutionCount - 1);
+            this.lastPullStartNeckY = this.neck().posY;
             this.beginPhase("PullUp");
         } else {
             // For a failed foot pick, the arm reach matters, not the haul:
