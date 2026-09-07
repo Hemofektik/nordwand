@@ -304,11 +304,34 @@ export class Game {
             case 50:
             case 51:
             case 52:
-            case 53: {
-                // Keys 1..5: game speed = realtime / divider.
+            case 53:
+            case 54:
+            case 55:
+            case 56:
+            case 57:
+                // Keys 1..9: game speed = realtime / divider.
                 this.time_divider = code - 48;
                 break;
-            }
+            case 48:
+                // Key 0: one-tenth speed.
+                this.time_divider = 10;
+                break;
+            case 97:
+            case 98:
+            case 99:
+            case 100:
+            case 101:
+            case 102:
+            case 103:
+            case 104:
+            case 105:
+                // Numpad 1..9 (keyCode 96 + digit): same as the number row.
+                this.time_divider = code - 96;
+                break;
+            case 96:
+                // Numpad 0: one-tenth speed.
+                this.time_divider = 10;
+                break;
             default:
                 break;
         }
