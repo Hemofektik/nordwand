@@ -39,6 +39,10 @@ export class Game {
     public frameSpacing = 0;
     public frame_delta = 0;
     public frame_delta_smoothed = 0;
+    /** Game-speed divider: simulation time = real time / divider. Hotkeys
+     *  1..5 set it (1 = realtime, 5 = one-fifth speed) - for watching the
+     *  climbing AI's IK work in slow motion. */
+    public time_divider = 1;
     public bg_color = "#BAD4ED";
     public level_width = 800;
     public level_height = 800;
@@ -296,6 +300,15 @@ export class Game {
             case 78:
                 this.music.next_song();
                 break;
+            case 49:
+            case 50:
+            case 51:
+            case 52:
+            case 53: {
+                // Keys 1..5: game speed = realtime / divider.
+                this.time_divider = code - 48;
+                break;
+            }
             default:
                 break;
         }
@@ -349,7 +362,7 @@ export class Game {
 
         this.frame_delta = Math.min(0.1, this.frame_delta);
         this.frame_delta_smoothed = this.frame_delta_smoothed * 0.7 + this.frame_delta * 0.3;
-        this.frame_delta = this.frame_delta_smoothed;
+        this.frame_delta = this.frame_delta_smoothed / this.time_divider;
 
         this.ctx.fillStyle = this.bg_color;
         this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
@@ -371,7 +384,8 @@ export class Game {
         this.player?.draw(this.ctx, this.cam);
         this.music.update();
 
-        const debugInfo = "FPS: " + (1.0 / this.frame_delta_smoothed).toFixed(2);
+        const speedNote = this.time_divider !== 1 ? ` | speed 1/${this.time_divider}` : "";
+        const debugInfo = "FPS: " + (1.0 / this.frame_delta_smoothed).toFixed(2) + speedNote;
         setTextOfElement(this.debugInfo, debugInfo);
     }
 
