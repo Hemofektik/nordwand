@@ -34,8 +34,19 @@ const STRAIGHT_HIP_ANGLE = Math.PI;
 const STRAIGHT_KNEE_ANGLE = Math.PI * 0.95;
 const COIL_KNEE_ANGLE = Math.PI * 0.5;
 const OVERHEAD_SHOULDER_ANGLE = Math.PI * 0.92;
-const STRAIGHT_ELBOW_ANGLE = Math.PI * 1.04;
-const ELBOW_MIN_ANGLE = Math.PI * 1.02;
+// Elbow hinge: the angle is measured neck->elbow vs elbow->hand, so 180deg
+// (straight) is the center. The skeleton's natural bend side is angle > 180
+// (initial pose ~190deg), but reaching across the body (e.g. up-LEFT when the
+// elbow hangs on the right) needs the elbow on the other side of the
+// neck->target line (~144deg) - the old one-sided clamp [1.02pi, 1.85pi]
+// forbade that and pinned the elbow at the clamp floor while the hand drifted
+// AWAY from the target (verified on seed 404, anchor a165). The window is
+// asymmetric around straight: generous on the natural side, and wide enough
+// on the other side to cover cross-body reaches, but NOT so wide that the
+// elbow can fold up over the shoulder (angles near 0 = elbow pointing back
+// over the neck, verified to break the hang on seed 202).
+const STRAIGHT_ELBOW_ANGLE = Math.PI;
+const ELBOW_MIN_ANGLE = Math.PI * 0.85;
 const ELBOW_MAX_ANGLE = Math.PI * 1.85;
 export const KNEE_MIN_ANGLE = Math.PI * 0.35;
 const KNEE_MAX_ANGLE = Math.PI * 0.95;
