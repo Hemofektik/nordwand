@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import { Wall } from "../src/Wall.ts";
 import { SpringPhysics } from "../src/Physics.ts";
 import { Skeleton } from "../src/Skeleton.ts";
-import { Rope } from "../src/Rope.ts";
 
 /**
  * Seed curation (concept/climbing-plan.md §9.3).
@@ -27,9 +26,13 @@ export function buildSettledHarness(seed: number) {
     const phys = new SpringPhysics();
     phys.wall = wall;
     const skeleton = new Skeleton(phys, wall, 150, 200);
-    const rope = new Rope(phys, wall, skeleton, 150, 200);
+    // NOTE: no Rope here. The rope is a game-presentation element (belay
+    // line) with a FIXED length; in a 40s climb it goes taut and then
+    // actively drags the climber back down (measured: slack 64px at t=0,
+    // -39px at t=20). The climbing AI must be evaluated on wall + physics
+    // + skeleton alone - the rope is not part of that equation.
     phys.settle();
-    return { wall, phys, skeleton, rope };
+    return { wall, phys, skeleton };
 }
 
 describe("curated seeds: valid settled initial hang", () => {
