@@ -74,6 +74,14 @@ export class Climber {
         this.phaseElapsed += deltaTime;
         this.motor.update(deltaTime);
 
+        // After a let-go (or a fall) nothing is latched: hold Idle until the
+        // climber has both a planted foot and a planted hand to work from.
+        // (Querying grab constraints for out-of-range sides would throw.)
+        if (this.plantedCount("foot") === 0 || this.plantedCount("hand") === 0) {
+            this.phase = "Idle";
+            return;
+        }
+
         if (this.phase === "Idle") {
             this.beginInitialPhase();
         }
@@ -138,6 +146,14 @@ export class Climber {
     // ------------------------------------------------------------------
     // Phase logic
     // ------------------------------------------------------------------
+
+    private plantedCount(kind: LimbKind): number {
+        let count = 0;
+        for (let side = 0; side < 2; side++) {
+            if (this.skeleton.isGrabbing(kind, side)) count++;
+        }
+        return count;
+    }
 
     private beginInitialPhase(): void {
         // Find the planted configuration (all four limbs latched at start).
