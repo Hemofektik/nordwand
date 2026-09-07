@@ -371,7 +371,10 @@ export class Skeleton {
         // starts make the curated-seed hangs reproducible.
         // Spawn anchors must also satisfy the gap rule (§7.1): every foot
         // anchor at least 15px below the lowest hand anchor.
-        const gap = 15;
+        // Spawn margin: the Climber's gap rule is 15px (FOOT_TO_LOWEST_HAND_GAP);
+        // the spawn uses gap+1 so the settled hang (which can drift ~1px)
+        // still satisfies the invariant.
+        const gap = 16;
 
         // 1. Left hand at the chosen arm anchor.
         const leftHandAnchor = defined(this.wall.wallAnchors[armAnchorIndex], "Missing arm anchor");
@@ -392,7 +395,9 @@ export class Skeleton {
             this.wall.wallAnchors[rightHandResolvedIndex],
             "Missing right hand anchor",
         );
-        const lowestHandY = Math.min(leftHandAnchor.posY, rightHandAnchor.posY);
+        // Lowest hand = LARGEST y (lowest position on the wall). The gap rule
+        // measures against the lowest hand, not the highest.
+        const lowestHandY = Math.max(leftHandAnchor.posY, rightHandAnchor.posY);
         const rightHandConstraint = defined(
             this.phys.fixedConstraints[defined(this.handGrabConstraintIndex[1], "Missing right hand grab")],
             "Missing right hand grab constraint",

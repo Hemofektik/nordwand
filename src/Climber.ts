@@ -24,11 +24,18 @@ import {
     type MotorStatus,
 } from "./ClimberMotor.ts";
 
-export type ClimberPhase = "LegReach" | "Push" | "HandReach" | "Idle";
+export type ClimberPhase = "LegReach" | "Push" | "HandReach" | "PullUp" | "Idle";
 
 const PHASE_TIMEOUT = 3.0;
 /** Minimum Push duration so the body gains height before HandReach. */
 const MIN_PUSH = 0.5;
+/** Preferred maximum foot leap: the foot rises at most this many px above
+ *  its origin (about 2-3 anchors at the wall's anchor spacing). Among valid
+ *  candidates the pick then prefers the highest anchor BELOW this cap; only
+ *  when nothing fits under the cap does it fall back to the highest overall
+ *  (still within reach and the gap rule). A full-band leap looks strangled
+ *  and makes the push phase far harder than it needs to be. */
+const FOOT_LEAP_MAX_RISE = 15;
 
 export class Climber {
     public readonly phys: SpringPhysics;
@@ -51,8 +58,9 @@ export class Climber {
     private releasedThisCycle = new Set<number>();
     /** Minimum remaining time for a substitution push (§5.2). */
     private pushHoldUntil = 0;
+    /** Minimum remaining time for a substitution pull-up (planted-arm haul). */
+    private pullHoldUntil = 0;
     /** y of the hand anchor released this cycle (for Q14 relaxation). */
-    private lastReleasedHandY: number | undefined;
     /** Consecutive substitutions without a successful latch (§8.4). */
     private substitutionCount = 0;
     /** Side the HandReach move reaches with (captured once per move). */
@@ -92,6 +100,9 @@ export class Climber {
                 break;
             case "Push":
                 this.updatePush();
+                break;
+            case "PullUp":
+                this.updatePullUp();
                 break;
             case "HandReach":
                 this.updateHandReach(deltaTime);
@@ -181,11 +192,22 @@ export class Climber {
 
     /** Re-latches a free limb to the anchor it was last latched to, if any. */
     private regrabFreeFoot(side: number): void {
-        this.regrabFreeLimb("foot", side, this.footReleasedAnchor, 30);
+        // Generous radius: a freed limb can swing far in a few substeps, and
+        // re-latching it hauls the body back toward the wall (the leg chain
+        // constrains the origin to within a limb's length of the anchor).
+        // Without this, a swung-away foot stalls the phase until Idle.
+        this.regrabFreeLimb("foot", side, this.footReleasedAnchor, 100);
     }
 
     private regrabFreeHand(side: number): void {
-        this.regrabFreeLimb("hand", side, this.handReleasedAnchor, 30);
+        this.regrabFreeLimb("hand", side, this.handReleasedAnchor, 100);
+    }
+
+    /** y of the anchor a free hand was last latched to (for the height floor). */
+    private handReleasedAnchorY(side: number): number | undefined {
+        const index = this.handReleasedAnchor[side];
+        if (index === undefined || index < 0) return undefined;
+        return this.wall.wallAnchors[index]?.posY;
     }
 
     private regrabFreeLimb(
@@ -259,11 +281,29 @@ export class Climber {
 
         const status = this.motor.reachFoot(freeSide, this.target);
         if (status === "latched") {
+            // Latch-time gap validation: the hands may have moved since the
+            // target was picked (a hand re-latching lower shrinks the gap
+            // band). If the latched anchor now violates feet-below-hands,
+            // undo the latch and re-pick - the invariant (§9.2) outranks the
+            // move.
+            const latched = this.wall.wallAnchors[this.target.index];
+            const lowestHandY = this.lowestHandAnchorY();
+            if (latched !== undefined && lowestHandY !== Number.POSITIVE_INFINITY && latched.posY < lowestHandY + FOOT_TO_LOWEST_HAND_GAP) {
+                this.log(`foot latch a${this.target.index} violates the gap rule (lowest hand y=${lowestHandY.toFixed(0)}) -> undo, re-pick`);
+                this.footReleasedAnchor[freeSide] = this.target.index;
+                this.releasedThisCycle.add(this.target.index);
+                this.motor.releaseFoot(freeSide);
+                this.target = undefined;
+                return;
+            }
             this.grabCount++;
             this.releasedThisCycle.clear();
             this.pendingSubstitution = undefined;
             this.ladderStep = 0;
             this.substitutionCount = 0;
+            // The foot is holding a fresh anchor: clear the stale released
+            // reference so a later regrab/floor uses the CURRENT hold.
+            this.footReleasedAnchor[freeSide] = -1;
             // NOTE: the old drive leg does NOT release here - it releases at
             // the start of Push (see updatePush), so that during HandReach
             // only the reaching hand is ever free (≤1-free invariant, §9.2).
@@ -298,6 +338,28 @@ export class Climber {
         }
     }
 
+    /**
+     * Substitution for a failed hand pick when the legs are crumpled: both
+     * planted arms flex (motor pullHand) to haul the body up toward the
+     * hands. This shortens neck-to-anchor distances so the re-pick after the
+     * hold finds candidates a leg push could never reach.
+     */
+    private updatePullUp(): void {
+        for (let side = 0; side < 2; side++) {
+            if (this.skeleton.isGrabbing("hand", side)) {
+                const anchor = this.wall.wallAnchors[this.skeleton.grabConstraint("hand", side).wallAnchorIndex];
+                if (anchor !== undefined) {
+                    this.motor.pullHand(side, anchor);
+                }
+            }
+        }
+        if (this.phaseElapsed >= this.pullHoldUntil) {
+            this.log("PullUp: hauled toward the hands");
+            this.pullHoldUntil = 0;
+            this.beginPhase("HandReach");
+        }
+    }
+
     private updateHandReach(deltaTime: number): void {
         void deltaTime;
         // A free foot here (left by a stale-cancel in the previous LegReach)
@@ -326,14 +388,42 @@ export class Climber {
 
         if (this.target === undefined) {
             const relaxed = this.ladderStep >= 2;
-            // Q14 relaxation: when the strict "above the neck" rule yields
-            // nothing (ladder step 2), relax to "above the hand's own current
-            // anchor". Safety rules never relax.
-            const releasedHandY = this.lastReleasedHandY;
-            const minAboveY = relaxed && releasedHandY !== undefined
-                ? releasedHandY
-                : this.neck().posY - HAND_MIN_ABOVE_NECK;
+            // Height floor for the hand target: above the neck (§7.1) AND
+            // above the hand's own current anchor when it is planted - the
+            // hand must make upward progress, never re-latch below itself
+            // (the neck hangs below the folded arms, so "above the neck"
+            // alone can pull a hand DOWN to its own level).
+            // Own-anchor floor: the hand must not re-latch below itself. When
+            // the reaching hand is free, its last-held anchor (tracked at
+            // release) is the reference - otherwise a freed hand can latch
+            // LOWER than its old hold and break the feet-below-hands gap.
+            const ownAnchorY = this.skeleton.isGrabbing("hand", reachSide)
+                ? this.wall.wallAnchors[this.skeleton.grabConstraint("hand", reachSide).wallAnchorIndex]?.posY
+                : this.handReleasedAnchorY(reachSide);
+            // The own-anchor floor is the upward-progress rule. The neck
+            // floor is NOT an additional constraint: after pushes the neck
+            // can rise ABOVE the hands (extended arms hang the body), and a
+            // neck floor would then filter out every in-reach anchor - the
+            // hands could never move and the phase deadlocked (verified on
+            // seed 101). Upward progress is guaranteed by the own-anchor
+            // floor; when the hand is free (first reach of a cycle), the
+            // partner hand's anchor y-5 is the progress reference.
+            const partnerSide = 1 - reachSide;
+            const partnerY = this.skeleton.isGrabbing("hand", partnerSide)
+                ? this.wall.wallAnchors[this.skeleton.grabConstraint("hand", partnerSide).wallAnchorIndex]?.posY
+                : undefined;
+            const floorY = ownAnchorY ?? (partnerY !== undefined ? partnerY : undefined);
+            const minAboveY = floorY !== undefined ? floorY - 5 : this.neck().posY - HAND_MIN_ABOVE_NECK;
             this.target = this.pickHandTarget(reachSide, minAboveY, relaxed);
+            if (this.target === undefined && !relaxed) {
+                // Ladder step 2 (§8): a failed pick at normal reach relaxes
+                // the reach BEFORE substituting - the body may just be
+                // compressed and the next hold is a stretch away, which a
+                // substitution push cannot fix (it has nothing to reach for).
+                this.ladderStep = 2;
+                this.log("hand pick: no candidates -> ladder step 2 (relaxed reach)");
+                this.target = this.pickHandTarget(reachSide, minAboveY, true);
+            }
             if (this.target === undefined) {
                 this.enterSubstitution("hand");
                 return;
@@ -343,7 +433,6 @@ export class Climber {
                 const anchorIndex = this.skeleton.grabConstraint("hand", lowestSide).wallAnchorIndex;
                 this.handReleasedAnchor[lowestSide] = anchorIndex;
                 this.releasedThisCycle.add(anchorIndex);
-                this.lastReleasedHandY = this.wall.wallAnchors[anchorIndex]?.posY;
                 this.motor.releaseHand(lowestSide);
             }
             this.motor.reachHand(reachSide, this.target);
@@ -359,6 +448,9 @@ export class Climber {
             this.pendingSubstitution = undefined;
             this.ladderStep = 0;
             this.substitutionCount = 0;
+            // The hand is holding a fresh anchor: clear the stale released
+            // reference so a later regrab/floor uses the CURRENT hold.
+            this.handReleasedAnchor[reachSide] = -1;
             this.supportArmSide = reachSide;
             this.log(`HandReach: hand latched anchor ${this.target.index}`);
             this.beginPhase("LegReach");
@@ -390,12 +482,18 @@ export class Climber {
         this.pendingSubstitution = failedMove;
         this.substitutionCount++;
         this.log(`substitution: ${failedMove} move has no candidates -> ${failedMove === "leg" ? "HandReach" : "leg push"} (ladder ${this.ladderStep}, streak ${this.substitutionCount})`);
-        if (failedMove === "leg") {
-            this.beginPhase("HandReach");
+        if (failedMove === "hand") {
+            // The body hangs from the planted arms; a leg push cannot raise
+            // it further when the arms are near-straight (the arms tether the
+            // body - verified on seed 505 where a push held the body frozen
+            // for 5s). A PULL on the planted arms hauls the body up toward
+            // the hands, closing the gap to the next hold cluster; the drive
+            // leg assists by extending at the same time.
+            this.pullHoldUntil = this.phaseElapsed + 0.8;
+            this.beginPhase("PullUp");
         } else {
-            // A leg push to bring the shoulders closer to new anchors: treat
-            // as a Push on the current drive leg. Hold the push for a minimum
-            // duration so the body actually rises before HandReach re-picks.
+            // For a failed foot pick, the arm reach matters, not the haul:
+            // a leg push raises the body toward new foot anchors.
             this.pushHoldUntil = this.phaseElapsed + 0.8;
             this.beginPhase("Push");
         }
@@ -433,6 +531,9 @@ export class Climber {
 
     private lowestHandSide(): number {
         let best = 0;
+        // Lowest on the wall = LARGEST y: seed with the smallest possible y
+        // so any real anchor y beats it (a POSITIVE_INFINITY seed here would
+        // make the comparison never true and always return side 0).
         let bestY = Number.NEGATIVE_INFINITY;
         for (let side = 0; side < 2; side++) {
             if (!this.skeleton.isGrabbing("hand", side)) continue;
@@ -460,7 +561,10 @@ export class Climber {
         const bone = this.boneSum("foot") / 2;
         const minFold = 2 * bone * Math.sin(KNEE_MIN_ANGLE / 2);
         let best: WallAnchor | undefined;
-        let bestY = Number.NEGATIVE_INFINITY;
+        let bestY = Number.POSITIVE_INFINITY;
+        // Highest candidate that rises at most FOOT_LEAP_MAX_RISE (2-3 anchors).
+        let cappedBest: WallAnchor | undefined;
+        let cappedBestY = Number.NEGATIVE_INFINITY;
         for (const anchor of this.wall.wallAnchors) {
             if (occupied.has(anchor.index) || this.motor.isBlacklisted(anchor.index)) continue;
             if (this.releasedThisCycle.has(anchor.index)) continue;
@@ -474,12 +578,24 @@ export class Climber {
             const distSqr = dx * dx + dy * dy;
             if (distSqr > reach * reach) continue;
             if (distSqr < minFold * minFold) continue;
-            // Rule 3 (CoM) is checked by the invariant contract after the move;
-            // here we prefer the highest candidate that passes 1+2.
-            if (anchor.posY > bestY) {
+            // Rule 3 (CoM) is checked by the invariant contract after the move.
+            // Preference with a leap cap: among valid candidates prefer the
+            // HIGHEST anchor that rises at most FOOT_LEAP_MAX_RISE above the
+            // origin - a 2-3 anchor step that keeps the push phase feasible
+            // and the gait readable. If no candidate fits under the cap, the
+            // highest overall in-band anchor is used so the foot never stalls
+            // just because the wall locally offers only long reaches.
+            if (anchor.posY < bestY) {
                 best = anchor;
                 bestY = anchor.posY;
             }
+            if (anchor.posY >= origin.posY - FOOT_LEAP_MAX_RISE && anchor.posY < cappedBestY) {
+                cappedBest = anchor;
+                cappedBestY = anchor.posY;
+            }
+        }
+        if (cappedBest !== undefined) {
+            best = cappedBest;
         }
         if (best !== undefined) {
             this.log(`foot target: ${best.index} (y=${best.posY.toFixed(0)}, relaxed=${relaxed})`);
@@ -523,7 +639,13 @@ export class Climber {
      */
     private isTargetOutOfRange(kind: LimbKind, target: WallAnchor): boolean {
         const origin = this.origin(kind);
-        const maxReach = this.boneSum(kind) * REACH_FRACTION_RELAXED + 6;
+        // Generous stale threshold: a long reach is exactly the move that
+        // swings the body away from the wall, and the swing makes the target
+        // measure out-of-range even though the reaching limb can still travel
+        // to it (the extended limb hauls the body back). Only declare stale
+        // when the target is beyond the relaxed reach PLUS the limb's own
+        // length - i.e. genuinely untouchable.
+        const maxReach = this.boneSum(kind) * REACH_FRACTION_RELAXED + 6 + this.boneSum(kind);
         const dx = target.posX - origin.posX;
         const dy = target.posY - origin.posY;
         return dx * dx + dy * dy > maxReach * maxReach;

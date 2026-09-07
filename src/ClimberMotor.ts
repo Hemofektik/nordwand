@@ -39,6 +39,8 @@ const ELBOW_MIN_ANGLE = Math.PI * 1.02;
 const ELBOW_MAX_ANGLE = Math.PI * 1.85;
 export const KNEE_MIN_ANGLE = Math.PI * 0.35;
 const KNEE_MAX_ANGLE = Math.PI * 0.95;
+/** Push goal: knee fully straight (pushWithLeg latches at 0.12 of this). */
+export const FULLY_STRAIGHT_KNEE_ANGLE = Math.PI;
 /** Minimum origin-to-foot distance the knee fold allows: with equal bones b
  *  and knee angle >= KNEE_MIN (angle between knee->origin and knee->end
  *  directions), the origin-end distance is 2b*sin(KNEE_MIN/2). Anchors closer
@@ -50,6 +52,11 @@ const STRAIGHT_SPINE_ANGLE = Math.PI;
 // --- angular solver coupling (validated) ---
 const PLANTED_TIGHTNESS = 10;
 const PLANTED_IK_SCALE = 0.85;
+/** Pull-up haul: the planted-arm IK target is pulled in by this many px
+ *  (subtractive, unlike the multiplicative PLANTED_IK_SCALE). */
+const PULL_AMOUNT = 5;
+/** A hand reach in flight longer than this gets the planted-arm haul assist. */
+const REACH_ASSIST_AFTER = 1.5;
 const ANGLE_SPEED = 10;
 const REACH_ANGLE_SPEED = 14;
 
@@ -74,7 +81,7 @@ function wrapAngle(angle: number): number {
     return angle;
 }
 
-function shortestAngleDelta(from: number, to: number): number {
+export function shortestAngleDelta(from: number, to: number): number {
     let delta = to - from;
     while (delta > Math.PI) {
         delta -= Math.PI * 2;
@@ -115,7 +122,7 @@ function jointAngle(originX: number, originY: number, jointX: number, jointY: nu
     return wrapAngle(Math.atan2(originY - jointY, originX - jointX) - Math.atan2(endY - jointY, endX - jointX));
 }
 
-function currentConstraintAngle(skeleton: Skeleton, constraintIndex: number): number {
+export function currentConstraintAngle(skeleton: Skeleton, constraintIndex: number): number {
     const constraint = defined(skeleton.phys.angularConstraints[constraintIndex], "Missing angular constraint");
     const s0 = defined(skeleton.phys.particleStates[constraint.particleIndex0], "Missing particle 0");
     const s1 = defined(skeleton.phys.particleStates[constraint.particleIndex1], "Missing particle 1");
@@ -218,20 +225,41 @@ export class ClimberMotor {
     }
 
     public reachHand(side: number, anchor: WallAnchor): MotorStatus {
-        // Hand rule (§7.1): the target must sit above the neck.
-        const neck = this.neck();
-        if (anchor.posY > neck.posY - HAND_MIN_ABOVE_NECK) {
-            return "unreachable";
-        }
+        // NOTE: the motor does NOT re-check the hand height floor here. The
+        // floor is a DECISION-layer rule (Climber.pickHandTarget): the
+        // own-anchor/partner-anchor floor there is posture-dependent and the
+        // motor's static neck floor disagreed with it - the pick accepted a
+        // target the motor then rejected as unreachable, and the phase
+        // timed out in a loop (verified on seed 505). The decision layer
+        // owns all filtering; the motor only checks geometric reachability.
         return this.beginOrContinueReach("hand", side, anchor, false);
     }
 
     public pullHand(side: number, anchor: WallAnchor): MotorStatus {
-        // Planted arm flexes to haul: same IK, target shortened from origin.
+        // Planted arm flexes to haul: the IK target is the anchor pulled IN
+        // by PULL_AMOUNT pixels along the origin->anchor direction. This
+        // deliberately BYPASSES the mantle posture override inside
+        // aimPlantedLimb, and the shortening is SUBTRACTIVE rather than the
+        // multiplicative PLANTED_IK_SCALE: when the arm hangs near-straight
+        // (dist ~= bone sum), scaling by 0.85 still clamps to ~full
+        // extension and the haul is a no-op (verified on seed 505).
         if (!this.skeleton.isGrabbing("hand", side)) {
             return "unreachable";
         }
-        this.aimPlantedLimb("hand", side, anchor, PLANTED_IK_SCALE, dtOrDefault());
+        const origin = this.origin("hand");
+        const { proximal, distal } = this.boneLengths("hand", side);
+        const dx = anchor.posX - origin.posX;
+        const dy = anchor.posY - origin.posY;
+        const dist = Math.hypot(dx, dy) || 1;
+        const maxReach = Math.max(0.5, proximal + distal - 0.5);
+        const minReach = Math.abs(proximal - distal) + 0.5;
+        const pullDist = Math.min(maxReach, Math.max(minReach, dist - PULL_AMOUNT));
+        const virtualTarget: WallAnchor = {
+            posX: origin.posX + (dx / dist) * pullDist,
+            posY: origin.posY + (dy / dist) * pullDist,
+            index: anchor.index,
+        };
+        this.aimArmToward(side, virtualTarget, dtOrDefault());
         return "in-progress";
     }
 
@@ -311,6 +339,22 @@ export class ClimberMotor {
         move.elapsed += deltaTime;
         this.aimReachingLimb(move, deltaTime);
         this.poseNonMovingLimbs(deltaTime, move);
+        // Reach-assist haul: when a hand reach has been in flight for a
+        // while without latching, the body is usually hanging just out of
+        // range with the planted arm near-straight (verified on seed 101:
+        // hand stalls 6.6px short of the anchor, latch radius 6). The
+        // planted arm then flexes (pullHand) to haul the body toward its
+        // own hold, closing the last few px. Without this the reach times
+        // out, the phase re-picks the same target, and the climb stalls.
+        if (move.kind === "hand" && move.elapsed > REACH_ASSIST_AFTER) {
+            const planted = 1 - move.side;
+            if (this.skeleton.isGrabbing("hand", planted)) {
+                const anchor = this.wall.wallAnchors[this.skeleton.grabConstraint("hand", planted).wallAnchorIndex];
+                if (anchor !== undefined) {
+                    this.pullHand(planted, anchor);
+                }
+            }
+        }
     }
 
     /** The move the motor is currently animating (read-only view). */
@@ -525,9 +569,15 @@ export class ClimberMotor {
      */
     private aimPlantedLimb(kind: LimbKind, side: number, anchor: WallAnchor, scale: number, deltaTime: number): void {
         const origin = this.origin(kind);
+        // Mantle posture: when a planted HAND holds an anchor BELOW the neck
+        // (the body has pushed up past its hands), folding the arm via a
+        // shortened target lets the body lean away from the wall. An EXTENDED
+        // arm holds the body close - use the full anchor as the IK target so
+        // the arm stays taut and hauls the neck in.
+        const effectiveScale = kind === "hand" && anchor.posY > origin.posY ? 1.0 : scale;
         const virtualTarget: WallAnchor = {
-            posX: origin.posX + (anchor.posX - origin.posX) * scale,
-            posY: origin.posY + (anchor.posY - origin.posY) * scale,
+            posX: origin.posX + (anchor.posX - origin.posX) * effectiveScale,
+            posY: origin.posY + (anchor.posY - origin.posY) * effectiveScale,
             index: anchor.index,
         };
         if (kind === "hand") {
@@ -643,10 +693,6 @@ export class ClimberMotor {
     private origin(kind: LimbKind) {
         const index = kind === "hand" ? this.skeleton.neckParticleIndex : this.skeleton.buttocksParticleIndex;
         return defined(this.phys.particleStates[index], `Missing ${kind} origin particle`);
-    }
-
-    private neck() {
-        return defined(this.phys.particleStates[this.skeleton.neckParticleIndex], "Missing neck particle");
     }
 
     private limb(kind: LimbKind, side: number) {
