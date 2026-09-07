@@ -98,7 +98,7 @@ export class Game {
             this.key_up(ev);
         });
         window.addEventListener("blur", () => {
-            this.pause(true);
+            //this.pause(true);
         });
 
         requiredElement("mute").addEventListener("click", () => {

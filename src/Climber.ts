@@ -112,6 +112,19 @@ export class Climber {
         }
 
         if (this.phaseElapsed > PHASE_TIMEOUT) {
+            // A phase that timed out while a move was in flight means the
+            // move's target was never reached: blacklist it so the next pick
+            // chooses a DIFFERENT anchor. Without this the pick re-chooses
+            // the same unreachable target every cycle (the phase timeout
+            // preempts the move timeout, so the normal timeout branch never
+            // sees it) and the climb loops on one anchor until Idle
+            // (verified on seed 404, anchor a80).
+            const move = this.motor.activeMove;
+            if (move !== undefined) {
+                this.log(`phase ${this.phase} timed out with move a${move.anchor.index} in flight -> blacklist`);
+                this.motor.blacklistAnchor(move.anchor.index);
+                this.motor.cancelMove();
+            }
             if (this.ladderStep === 0) {
                 this.ladderStep = 2;
                 this.log(`phase ${this.phase} timed out -> ladder step 2 (relaxed reach)`);
@@ -310,7 +323,16 @@ export class Climber {
             this.driveLegSide = freeSide;
             this.log(`LegReach: foot latched anchor ${this.target.index}`);
             this.beginPhase("Push");
-        } else if (status === "timeout") {
+        } else if (status === "timeout" || status === "unreachable") {
+            // The target was unreachable from the current body pose (the
+            // body sags when the foot releases). Blacklist it so the next
+            // pick chooses a DIFFERENT anchor instead of looping on the
+            // same one until the stall ladder Idles.
+            this.log(`LegReach: foot target a${this.target.index} ${status} -> blacklist`);
+            this.motor.blacklistAnchor(this.target.index);
+            // The foot may be free (the move released it): re-latch to the
+            // old hold so the ≤1-free invariant holds while re-picking.
+            this.regrabFreeFoot(freeSide);
             this.target = undefined;
         }
     }
@@ -454,7 +476,19 @@ export class Climber {
             this.supportArmSide = reachSide;
             this.log(`HandReach: hand latched anchor ${this.target.index}`);
             this.beginPhase("LegReach");
+        } else if (status === "unreachable") {
+            // The anchor is valid (the pick just chose it) but the body
+            // swung/sagged out of envelope. Blacklisting here causes a
+            // boundary-flapping loop (the neck oscillates around the reach
+            // edge); instead HAUL the body closer and keep the target.
+            this.log(`HandReach: hand target a${this.target.index} unreachable -> PullUp, keep target`);
+            this.regrabFreeHand(reachSide);
+            this.pullHoldUntil = this.phaseElapsed + 1.0;
+            this.beginPhase("PullUp");
         } else if (status === "timeout") {
+            this.log(`HandReach: hand target a${this.target.index} timed out -> blacklist`);
+            this.motor.blacklistAnchor(this.target.index);
+            this.regrabFreeHand(reachSide);
             this.target = undefined;
         }
     }
@@ -488,8 +522,12 @@ export class Climber {
             // body - verified on seed 505 where a push held the body frozen
             // for 5s). A PULL on the planted arms hauls the body up toward
             // the hands, closing the gap to the next hold cluster; the drive
-            // leg assists by extending at the same time.
-            this.pullHoldUntil = this.phaseElapsed + 0.8;
+            // leg assists by extending at the same time. The hold scales with
+            // the substitution streak: a single 1.5s haul often leaves the
+            // target a fraction of a px out of reach, and the pick re-runs
+            // before the body is high enough - repeated failures must haul
+            // longer (verified on seed 101, a80 at 28px vs reach 27.6).
+            this.pullHoldUntil = this.phaseElapsed + 1.5 + 0.75 * (this.substitutionCount - 1);
             this.beginPhase("PullUp");
         } else {
             // For a failed foot pick, the arm reach matters, not the haul:
@@ -551,6 +589,16 @@ export class Climber {
         const occupied = this.occupiedIndices();
         const lowestHandY = this.lowestHandAnchorY();
         const origin = this.origin("foot");
+        // The leap band is measured from the BUTTOCKS (the pick's IK origin):
+        // the foot can physically reach anything within the butt's reach
+        // envelope, so a band around the butt admits every anchor the leg
+        // could actually take. A band around the foot's own anchor is too
+        // narrow when the body is extended - it excluded anchors 30-40px
+        // above the foot that the leg reaches easily, forcing downward
+        // repositioning steps (verified on seed 101: feet stuck at y=360
+        // while a53/a54 rose 5-10px away). Preference is the CLOSEST
+        // candidate in the band - a small step, not a max-reach fling.
+        const leapRefY = origin.posY;
         // Reach envelope matches the motor's: the end particle can latch
         // within LATCH_RADIUS of the anchor, so the origin-reach band is
         // boneSum*fraction + LATCH_RADIUS.
@@ -561,10 +609,11 @@ export class Climber {
         const bone = this.boneSum("foot") / 2;
         const minFold = 2 * bone * Math.sin(KNEE_MIN_ANGLE / 2);
         let best: WallAnchor | undefined;
-        let bestY = Number.POSITIVE_INFINITY;
-        // Highest candidate that rises at most FOOT_LEAP_MAX_RISE (2-3 anchors).
+        let bestDist = Number.POSITIVE_INFINITY;
+        // Closest candidate that rises at most FOOT_LEAP_MAX_RISE above the
+        // reaching foot's own anchor (2-3 anchor step).
         let cappedBest: WallAnchor | undefined;
-        let cappedBestY = Number.NEGATIVE_INFINITY;
+        let cappedBestDist = Number.POSITIVE_INFINITY;
         for (const anchor of this.wall.wallAnchors) {
             if (occupied.has(anchor.index) || this.motor.isBlacklisted(anchor.index)) continue;
             if (this.releasedThisCycle.has(anchor.index)) continue;
@@ -579,23 +628,30 @@ export class Climber {
             if (distSqr > reach * reach) continue;
             if (distSqr < minFold * minFold) continue;
             // Rule 3 (CoM) is checked by the invariant contract after the move.
-            // Preference with a leap cap: among valid candidates prefer the
-            // HIGHEST anchor that rises at most FOOT_LEAP_MAX_RISE above the
-            // origin - a 2-3 anchor step that keeps the push phase feasible
-            // and the gait readable. If no candidate fits under the cap, the
-            // highest overall in-band anchor is used so the foot never stalls
-            // just because the wall locally offers only long reaches.
-            if (anchor.posY < bestY) {
-                best = anchor;
-                bestY = anchor.posY;
+            // Preference with a leap cap measured from the foot's own anchor:
+            // among valid candidates prefer the CLOSEST anchor that still
+            // rises (smaller y = higher) - a small step up, not a max-reach
+            // fling. The old "highest within the cap" preference maxed out
+            // the cap on every step, which read as a huge leap even though
+            // the cap held. If nothing rises within the cap, take the
+            // SHORTEST leap in-band (not the highest anchor): the old
+            // fallback flung the foot to the highest in-reach anchor - a
+            // 47px leap with 11 closer alternatives available (verified on
+            // seed 101, a61 -> a73).
+            if (cappedBest === undefined) {
+                const dist = Math.sqrt(distSqr);
+                if (best === undefined || dist < bestDist) {
+                    best = anchor;
+                    bestDist = dist;
+                }
             }
-            if (anchor.posY >= origin.posY - FOOT_LEAP_MAX_RISE && anchor.posY < cappedBestY) {
-                cappedBest = anchor;
-                cappedBestY = anchor.posY;
+            if (anchor.posY >= leapRefY - FOOT_LEAP_MAX_RISE && anchor.posY <= leapRefY + FOOT_LEAP_MAX_RISE) {
+                const dist = Math.sqrt(distSqr);
+                if (cappedBest === undefined || dist < cappedBestDist) {
+                    cappedBest = anchor;
+                    cappedBestDist = dist;
+                }
             }
-        }
-        if (cappedBest !== undefined) {
-            best = cappedBest;
         }
         if (best !== undefined) {
             this.log(`foot target: ${best.index} (y=${best.posY.toFixed(0)}, relaxed=${relaxed})`);
@@ -606,6 +662,11 @@ export class Climber {
     private pickHandTarget(_side: number, minAboveY: number, relaxed: boolean): WallAnchor | undefined {
         const occupied = this.occupiedIndices();
         const origin = this.origin("hand");
+        // NOTE: no stretch factor here. The IK (bentJointPosition) clamps the
+        // target distance to proximal+distal-0.5 - it commands REST lengths,
+        // not the load-stretched ones. A stretched envelope made the pick
+        // accept targets the arm could never reach (verified on seed 101:
+        // a76 at 27.7 vs true IK reach 25.5 - the hand froze 8px short).
         const reach = this.boneSum("hand") * (relaxed ? REACH_FRACTION_RELAXED : REACH_FRACTION) + 6;
         let best: WallAnchor | undefined;
         let bestY = Number.POSITIVE_INFINITY;

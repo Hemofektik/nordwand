@@ -23,7 +23,7 @@ export type LimbKind = "hand" | "foot";
 // --- constants (concept/climbing-plan.md §7.1) ---
 export const REACH_FRACTION = 0.9;
 export const REACH_FRACTION_RELAXED = 1.0;
-export const LATCH_RADIUS = 6;
+export const LATCH_RADIUS = 8;
 export const FOOT_TO_LOWEST_HAND_GAP = 15;
 export const HAND_MIN_ABOVE_NECK = 5;
 export const COM_MAX_WALL_DISTANCE = 35;
@@ -331,6 +331,16 @@ export class ClimberMotor {
         }
     }
 
+    /**
+     * Blacklists an anchor for 3s (same window as release anti-flicker).
+     * Used by the decision layer when a reach TIMES OUT: without this the
+     * pick re-chooses the same unreachable target every cycle and the phase
+     * loops forever (verified on seed 404, anchor a80).
+     */
+    public blacklistAnchor(anchorIndex: number): void {
+        this.recentlyReleased.set(anchorIndex, this.clock);
+    }
+
     // ------------------------------------------------------------------
     // Per-substep update
     // ------------------------------------------------------------------
@@ -390,7 +400,12 @@ export class ClimberMotor {
         if (releasedAt === undefined) {
             return false;
         }
-        if (this.clock - releasedAt >= 3) {
+        // 1.5s window: long enough to break a pick loop, short enough that
+        // an anchor blacklisted because of a transient body sag becomes
+        // available again once the posture recovers. The old 3s window
+        // outlived the sag and starved the pick of every candidate
+        // (verified on seed 303: a65/a66 blacklisted left NO candidates).
+        if (this.clock - releasedAt >= 1.5) {
             this.recentlyReleased.delete(anchorIndex);
             return false;
         }
@@ -405,8 +420,32 @@ export class ClimberMotor {
         void relaxed;
         const origin = this.origin(kind);
         const { proximal, distal } = this.boneLengths(kind, side);
+        // NOTE: rest lengths, no stretch factor. The IK (bentJointPosition)
+        // clamps the target distance to proximal+distal-0.5 - it commands
+        // REST lengths; the load-stretched constraint length is not
+        // achievable by command. A stretched envelope accepted targets the
+        // arm could never reach (verified on seed 101: a76 at 27.7 vs true
+        // IK reach 25.5 - the hand froze 8px short for the whole timeout).
         const reach = (proximal + distal) * REACH_FRACTION_RELAXED + LATCH_RADIUS;
-        if (distanceSqr(origin.posX, origin.posY, anchor.posX, anchor.posY) > reach * reach) {
+        // Envelope gate: only for STARTING a move. Once a move to this anchor
+        // is in flight, the reaching limb itself displaces the body (the
+        // swing carries the origin out past the envelope transiently), and
+        // re-checking every call killed healthy moves mid-flight (verified
+        // on seed 101: pick at d=24.8, killed at d=29.1 while still swinging
+        // toward the anchor). The continuous check below (with its grace
+        // period) handles genuinely stale targets.
+        const moveInFlightToThisAnchor =
+            this.currentMove !== undefined &&
+            this.currentMove.kind === kind &&
+            this.currentMove.side === side &&
+            this.currentMove.anchor.index === anchor.index;
+        if (
+            !moveInFlightToThisAnchor &&
+            distanceSqr(origin.posX, origin.posY, anchor.posX, anchor.posY) > reach * reach
+        ) {
+            if (import.meta.env?.DEV) {
+                console.log(`[motor] ${kind}${side} initial unreachable: a${anchor.index} d=${Math.hypot(origin.posX - anchor.posX, origin.posY - anchor.posY).toFixed(1)} reach=${reach.toFixed(1)}`);
+            }
             return "unreachable";
         }
         if (this.currentMove === undefined) {
@@ -430,6 +469,14 @@ export class ClimberMotor {
             this.currentMove = undefined;
             return "latched";
         }
+        // NOTE: no continuous reachability check here. An earlier version
+        // killed moves whose origin->anchor distance left the envelope
+        // mid-flight, but the reaching limb itself displaces the body (the
+        // swing transiently carries the origin out of the envelope), so
+        // healthy moves were killed at the grace boundary (verified on seed
+        // 101: pick at d=24.8, killed at d=29.1 while the hand was mid-swing
+        // toward the anchor). Stale targets are handled by the move timeout
+        // plus the decision layer's blacklist-on-timeout.
         if (move.elapsed > MOVE_TIMEOUT) {
             this.currentMove = undefined;
             return "timeout";
