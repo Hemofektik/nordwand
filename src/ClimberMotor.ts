@@ -48,7 +48,16 @@ const OVERHEAD_SHOULDER_ANGLE = Math.PI * 0.92;
 const STRAIGHT_ELBOW_ANGLE = Math.PI;
 const ELBOW_MIN_ANGLE = Math.PI * 0.85;
 const ELBOW_MAX_ANGLE = Math.PI * 1.85;
-export const KNEE_MIN_ANGLE = Math.PI * 0.35;
+/** Knee fold floor: the measured failure mode is the IK CLAMPED at this
+ *  value while the target needs a tighter fold - the move then times out
+ *  with the foot frozen short (verified on seed 101, move to a126: anchor
+ *  15.8px from the buttocks needs an interior knee angle of 56deg, but
+ *  KNEE_MIN=63deg forbids it; the foot sat 18.5px short for the whole
+ *  3s timeout). A deep human squat reaches ~40-45deg, so the floor is
+ *  40deg. It remains a fold guard (the singularity at 0deg is still
+ *  excluded); the physics solver's hard knee floor stays at 0.05pi for
+ *  load compression. */
+export const KNEE_MIN_ANGLE = Math.PI * (40 / 180);
 const KNEE_MAX_ANGLE = Math.PI * 0.95;
 /** Push goal: knee fully straight (pushWithLeg latches at 0.12 of this). */
 export const FULLY_STRAIGHT_KNEE_ANGLE = Math.PI;
