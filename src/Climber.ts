@@ -122,6 +122,29 @@ export class Climber {
                 break;
         }
 
+        // Lean-out haul - EARLY, not only on phase timeout (measured on
+        // seed 505: the body can lean 40px out from its hand anchors; both
+        // legs then lock knees-behind within the 3s phase window and the
+        // climber is stuck until the timeout fires). When the lean exceeds
+        // the threshold mid-phase, interrupt whatever is happening and
+        // haul first - the legs cannot serve any pick from a leaned-out
+        // pose anyway.
+        if (
+            (this.phase === "HandReach" || this.phase === "LegReach") &&
+            this.phaseElapsed > 0.5 &&
+            this.bodyLeanedOut()
+        ) {
+            this.log(`body leaned out mid-phase (${this.phase}) -> PullUp to flex back to the wall`);
+            this.regrabFreeFoot(0);
+            this.regrabFreeFoot(1);
+            this.regrabFreeHand(0);
+            this.regrabFreeHand(1);
+            this.pullHoldUntil = 0.8;
+            this.lastPullStartNeckY = this.neck().posY;
+            this.beginPhase("PullUp");
+            return;
+        }
+
         if (this.phaseElapsed > PHASE_TIMEOUT) {
             // Lean-out haul: a phase that times out with the body hanging
             // AWAY from the wall (the release sag + gravity lean it out;
