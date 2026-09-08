@@ -60,8 +60,20 @@ const OVERHEAD_SHOULDER_ANGLE = Math.PI * 0.92;
 // elbow can fold up over the shoulder (angles near 0 = elbow pointing back
 // over the neck, verified to break the hang on seed 202).
 const STRAIGHT_ELBOW_ANGLE = Math.PI;
-const ELBOW_MIN_ANGLE = Math.PI * 0.85;
-const ELBOW_MAX_ANGLE = Math.PI * 1.85;
+/** Elbow window: SYMMETRIC around straight (180deg), covering BOTH bend
+ *  sides in one arc. Measured requirement on seed 101 a50: d(neck->anchor)
+ *  9.2px with 10px bones needs an interior elbow angle of 54.8deg =
+ *  125deg fold-from-straight; the old F=117 window pinned the elbow and
+ *  the wrist hovered 5.3px short forever. F=140 (human elbows flex to
+ *  ~40deg interior = 140 fold) admits it with margin.
+ *  Why symmetric matters: the window is applied as a LINEAR clamp on a
+ *  wrapping angle. An asymmetric window like [63,333] forbids the arc
+ *  (333..63) through 0, which contains legitimate OTHER-side folds - the
+ *  elbow then gets stuck on the wrong bend side (measured: desired 45,
+ *  current 333, shortestAngleDelta points forward through 360 but the
+ *  clamp pins 333). */
+const ELBOW_MIN_ANGLE = Math.PI * (40 / 180);
+const ELBOW_MAX_ANGLE = Math.PI * (320 / 180);
 /** Knee fold floor: the measured failure mode is the IK CLAMPED at this
  *  value while the target needs a tighter fold - the move then times out
  *  with the foot frozen short (verified on seed 101, move to a126: anchor
@@ -155,11 +167,37 @@ function moveJointAngle(
     maxAngle?: number,
     speed = ANGLE_SPEED,
 ): number {
-    let next = current + shortestAngleDelta(current, target) * Math.min(1, deltaTime * speed);
-    next = wrapAngle(next);
+    let delta = shortestAngleDelta(current, target);
     if (minAngle !== undefined && maxAngle !== undefined) {
+        // Window-aware routing (measured on seed 101 a50): the window is an
+        // ARC [min,max] through 180; the forbidden arc (max..min) through 0
+        // separates the two bend sides. When the SHORT path from current to
+        // target passes through the forbidden arc, the linear clamp would
+        // pin the joint at the window edge forever (elbow stuck at 320
+        // while the target folded to 67 on the other side). In that case
+        // route the LONG way through 180.
+        //
+        // Precise crossing test: current normalized to [0,2pi); the short
+        // path crosses the forbidden arc iff it passes through the 0/2pi
+        // boundary (the forbidden arc lives around 0).
+        const cur = wrapAngle(current);
+        const unwrappedEnd = cur + delta;
+        const crossesForbidden =
+            (delta > 0 && unwrappedEnd >= Math.PI * 2) ||
+            (delta < 0 && unwrappedEnd <= 0);
+        if (crossesForbidden) {
+            delta = delta > 0 ? delta - Math.PI * 2 : delta + Math.PI * 2;
+        }
+        let next = current + delta * Math.min(1, deltaTime * speed);
+        next = wrapAngle(next);
+        // Clamp INSIDE the window: after rerouting, the motion approaches
+        // the target through 180 and never leaves the window, so the clamp
+        // only acts as a final safety.
         next = clampRange(next, minAngle, maxAngle);
+        return next;
     }
+    let next = current + delta * Math.min(1, deltaTime * speed);
+    next = wrapAngle(next);
     return next;
 }
 
@@ -497,6 +535,19 @@ export class ClimberMotor {
         // arm could never reach (verified on seed 101: a76 at 27.7 vs true
         // IK reach 25.5 - the hand froze 8px short for the whole timeout).
         const reach = (proximal + distal) * REACH_FRACTION_RELAXED + REACH_MARGIN;
+        // MIN reach: the knee fold floor keeps the end particle at least
+        // MIN_FOLD px from the origin (2*minBone*sin(KNEE_MIN/2)). An anchor
+        // CLOSER than that is unreachable by pure geometry - no pose of the
+        // leg can bring the ankle to it (measured on seed 101, a45: anchor
+        // 9.1px from the butt vs 8.2px fold floor; the IK converged to its
+        // commanded pose exactly and the ankle still parked 9.3px away -
+        // the gate only ever checked MAX reach, so the move timed out).
+        // NOTE: measured from the limb's CURRENT end particle, not the
+        // origin: the butt moves after the pick, so the honest test is
+        // "can the end particle get closer to the anchor than half the
+        // fold floor" - a loose static bound just restores the old bug.
+        const minBone = Math.min(proximal, distal);
+        const minFold = 2 * minBone * Math.sin(KNEE_MIN_ANGLE / 2);
         // Envelope gate: only for STARTING a move. Once a move to this anchor
         // is in flight, the reaching limb itself displaces the body (the
         // swing carries the origin out past the envelope transiently), and
@@ -511,10 +562,11 @@ export class ClimberMotor {
             this.currentMove.anchor.index === anchor.index;
         if (
             !moveInFlightToThisAnchor &&
-            distanceSqr(origin.posX, origin.posY, anchor.posX, anchor.posY) > reach * reach
+            (distanceSqr(origin.posX, origin.posY, anchor.posX, anchor.posY) > reach * reach ||
+             distanceSqr(origin.posX, origin.posY, anchor.posX, anchor.posY) < minFold * minFold * 0.25)
         ) {
             if (import.meta.env?.DEV) {
-                console.log(`[motor] ${kind}${side} initial unreachable: a${anchor.index} d=${Math.hypot(origin.posX - anchor.posX, origin.posY - anchor.posY).toFixed(1)} reach=${reach.toFixed(1)}`);
+                console.log(`[motor] ${kind}${side} initial unreachable: a${anchor.index} d=${Math.hypot(origin.posX - anchor.posX, origin.posY - anchor.posY).toFixed(1)} reach=${reach.toFixed(1)} minFold=${minFold.toFixed(1)}`);
             }
             return "unreachable";
         }
@@ -539,7 +591,27 @@ export class ClimberMotor {
             this.currentMove = undefined;
             return "latched";
         }
-        // NOTE: no continuous reachability check here. An earlier version
+        // Continuous FOLD-CIRCLE check (for legs): if the body sags so the
+        // anchor ends up inside the knee fold circle, no pose can ever
+        // reach it - this is NOT the transient swing overshoot that killed
+        // the old continuous max-reach check (the swing moves the origin
+        // OUTWARD; sag moves it INWARD past the fold floor, which is a
+        // permanent geometric impossibility, measured on seed 101 a45:
+        // butt drifted from d=9.1 to d=1.2 after the foot release). The
+        // honest bound: the ankle can never get closer to the anchor than
+        // (minFold - d(origin->anchor)), so the anchor is truly lost when
+        // that lower bound exceeds the latch radius (measured on seed 101
+        // a44: bound 3.2 < LATCH 5 at the fold boundary - a pose at
+        // hip=358/knee=40 can still latch there, so the bound - not the
+        // raw fold circle - is the correct test).
+        if (kind === "foot" && !this.skeleton.isGrabbing("foot", side)) {
+            const dOriginAnchor = Math.sqrt(distanceSqr(origin.posX, origin.posY, anchor.posX, anchor.posY));
+            if (minFold - dOriginAnchor > LATCH_RADIUS) {
+                this.currentMove = undefined;
+                return "unreachable";
+            }
+        }
+        // NOTE: no continuous max-reach check here. An earlier version
         // killed moves whose origin->anchor distance left the envelope
         // mid-flight, but the reaching limb itself displaces the body (the
         // swing transiently carries the origin out of the envelope), so
@@ -654,7 +726,25 @@ export class ClimberMotor {
         }
         const maxReach = Math.max(0.5, proximal + distal - 0.5);
         const minReach = Math.abs(proximal - distal) + 0.5;
-        const clampedDistance = Math.min(maxReach, Math.max(minReach, reachDistance));
+        // Fold-circle handling: when the target is CLOSER to the origin than
+        // the knee fold allows (d < 2*minBone*sin(KNEE_MIN/2)), the standard
+        // clamped-distance solve produces candidate knees whose angles are
+        // BOTH outside [KNEE_MIN, KNEE_MAX] (near-collinear, angle ~0/360 -
+        // measured on seed 101 a44: candidates at 336/24deg), so the pool
+        // falls back to both and continuity commands a hip toward a pose
+        // that CANNOT reach the target. The poses that CAN reach an
+        // inside-fold target put the knee ON the fold circle with the shin
+        // pointing at the target: knee = origin + thighDir*femur where the
+        // ankle lands at minFold from the origin. Solve those directly:
+        // knee = origin + femur*unit(t) rotated by +/-KNEE_MIN/2-ish geometry:
+        // place the knee so that |knee-origin|=proximal, |knee-target|=distal
+        // (the ankle then sits at the target exactly) - this is the standard
+        // two-bone solve with dc=|target-origin| NOT clamped to minReach but
+        // to minFold, giving a valid triangle with knee angle = KNEE_MIN.
+        const minFold = 2 * Math.min(proximal, distal) * Math.sin(KNEE_MIN_ANGLE / 2);
+        const clampedDistance = reachDistance < minFold
+            ? minFold
+            : Math.min(maxReach, Math.max(minReach, reachDistance));
         const dirX = reachX / reachDistance;
         const dirY = reachY / reachDistance;
         const cosine = clampRange(
