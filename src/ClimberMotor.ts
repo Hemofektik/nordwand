@@ -468,14 +468,19 @@ export class ClimberMotor {
         move.elapsed += deltaTime;
         this.aimReachingLimb(move, deltaTime);
         this.poseNonMovingLimbs(deltaTime, move);
-        // Reach-assist haul: when a hand reach has been in flight for a
-        // while without latching, the body is usually hanging just out of
-        // range with the planted arm near-straight (verified on seed 101:
-        // hand stalls 6.6px short of the anchor, latch radius 6). The
-        // planted arm then flexes (pullHand) to haul the body toward its
-        // own hold, closing the last few px. Without this the reach times
-        // out, the phase re-picks the same target, and the climb stalls.
-        if (move.kind === "hand" && move.elapsed > REACH_ASSIST_AFTER) {
+        // Planted-arm flex during a hand reach (user request): while the
+        // free arm reaches, the LATCHED arm should be flexed - upper arm
+        // close to the body, elbow at a small angle - so the body hangs
+        // close to the wall and the reach has more range. The passive
+        // poseNonMovingLimbs path (scale 0.85) barely bends the arm on far
+        // anchors (0.85 * d(24) = 20.4 ~ the 19.5 full-extension limit,
+        // measured: planted elbow >160deg in 95% of reach frames), so the
+        // body hangs at arm's length and 1-in-5 reaches fail. pullHand
+        // actively pulls the anchor IN along the origin direction (the
+        // same haul the reach-assist uses), folding the arm properly.
+        // This replaces the passive pose for the planted arm during the
+        // whole reach, not just after REACH_ASSIST_AFTER.
+        if (move.kind === "hand") {
             const planted = 1 - move.side;
             if (this.skeleton.isGrabbing("hand", planted)) {
                 const anchor = this.wall.wallAnchors[this.skeleton.grabConstraint("hand", planted).wallAnchorIndex];
