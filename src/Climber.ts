@@ -123,6 +123,31 @@ export class Climber {
         }
 
         if (this.phaseElapsed > PHASE_TIMEOUT) {
+            // Lean-out haul: a phase that times out with the body hanging
+            // AWAY from the wall (the release sag + gravity lean it out;
+            // measured on seed 505: |neck.x - handAnchor.x| = 13.8-14.0px)
+            // leaves the arms stretched past rest and the feet kicking at
+            // anchors the leaned-out pose cannot serve. The legs go back
+            // and forth, the arms never flex. Flexing the planted arms
+            // (pullHand) hauls the body back to the wall - do that ONCE
+            // per ladder step before escalating (a haul that helps raises
+            // the neck, and the stall-ladder logic below already respects
+            // progress).
+            if (
+                (this.phase === "HandReach" || this.phase === "LegReach") &&
+                !this.motor.hasMove() &&
+                this.bodyLeanedOut()
+            ) {
+                this.log(`phase ${this.phase} timed out with the body leaned out -> PullUp to flex back to the wall`);
+                this.regrabFreeFoot(0);
+                this.regrabFreeFoot(1);
+                this.regrabFreeHand(0);
+                this.regrabFreeHand(1);
+                this.pullHoldUntil = 0.8;
+                this.lastPullStartNeckY = this.neck().posY;
+                this.beginPhase("PullUp");
+                return;
+            }
             // A phase that timed out while a move was in flight means the
             // move's target was never reached: blacklist it so the next pick
             // chooses a DIFFERENT anchor. Without this the pick re-chooses
@@ -509,10 +534,38 @@ export class Climber {
             this.pullHoldUntil = this.phaseElapsed + 1.0;
             this.beginPhase("PullUp");
         } else if (status === "timeout") {
-            this.log(`HandReach: hand target a${this.target.index} timed out -> blacklist`);
+            // The body likely swung AWAY from the wall during the move (the
+            // release sag + gravity lean the body out; measured on seed 505:
+            // neck hangs 4-11px horizontally off the wall line with both
+            // arms stretched past rest length). Re-picking from this
+            // leaned-out pose re-admits the same marginal anchors and loops.
+            // The escape: FLEX the planted arm(s) - pullHand hauls the body
+            // back toward the wall - then re-pick. Only haul when the body
+            // actually leans out (neck horizontally beyond the wall side of
+            // its hands); a centered body needs no haul.
+            const neckX = this.neck().posX;
+            let leanOut = false;
+            for (let side = 0; side < 2; side++) {
+                if (!this.skeleton.isGrabbing("hand", side)) continue;
+                const c = this.skeleton.grabConstraint("hand", side);
+                const a = this.wall.wallAnchors[c.wallAnchorIndex];
+                if (a !== undefined && Math.abs(neckX - a.posX) > 2) {
+                    leanOut = true;
+                    break;
+                }
+            }
             this.motor.blacklistAnchor(this.target.index);
+            const timedOutIndex = this.target.index;
             this.regrabFreeHand(reachSide);
             this.target = undefined;
+            if (leanOut && this.skeleton.isGrabbing("hand", 1 - reachSide)) {
+                this.log(`HandReach: hand target timed out with the body leaned out -> PullUp to flex back to the wall`);
+                this.pullHoldUntil = this.phaseElapsed + 1.0;
+                this.lastPullStartNeckY = this.neck().posY;
+                this.beginPhase("PullUp");
+            } else {
+                this.log(`HandReach: hand target a${timedOutIndex} timed out -> blacklist`);
+            }
         }
     }
 
@@ -604,6 +657,24 @@ export class Climber {
      * True when at least one planted leg is bent enough to push the body
      * higher (knee well short of straight).
      */
+    /**
+     * True when the body hangs horizontally AWAY from its hand anchors
+     * (the release sag + gravity lean the body out; the arms then stretch
+     * past rest and neither the legs nor the arms can serve their picks).
+     */
+    private bodyLeanedOut(): boolean {
+        const neckX = this.neck().posX;
+        for (let side = 0; side < 2; side++) {
+            if (!this.skeleton.isGrabbing("hand", side)) continue;
+            const c = this.skeleton.grabConstraint("hand", side);
+            const a = this.wall.wallAnchors[c.wallAnchorIndex];
+            if (a !== undefined && Math.abs(neckX - a.posX) > 4) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private legsCanPush(): boolean {
         for (let side = 0; side < 2; side++) {
             if (!this.skeleton.isGrabbing("foot", side)) continue;
