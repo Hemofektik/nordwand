@@ -845,12 +845,20 @@ export class Climber {
             const dx = anchor.posX - origin.posX;
             const dy = anchor.posY - origin.posY;
             const distSqr = dx * dx + dy * dy;
-            let withinReach = distSqr <= reach * reach && distSqr >= minFold * minFold;
+            // Min-fold floor: anchors CLOSER to the origin than the knee fold
+            // floor have no leg solution except the knee poking sideways or
+            // backward (user screenshot: a ~7px-above-butt anchor with the
+            // knee jutting behind the body, pressing the body onto the
+            // wall). Applies to BOTH the direct envelope and the hybrid
+            // step: the hybrid previously only required stepDist >=
+            // minFold*0.5, letting inside-fold anchors through.
+            const minFoldSq = minFold * minFold;
+            let withinReach = distSqr <= reach * reach && distSqr >= minFoldSq;
             if (!withinReach && ownAnchor !== undefined) {
                 const sdx = anchor.posX - ownAnchor.posX;
                 const sdy = anchor.posY - ownAnchor.posY;
                 const stepDist = Math.hypot(sdx, sdy);
-                if (stepDist <= FOOT_STEP_RADIUS && stepDist >= minFold * 0.5) {
+                if (stepDist <= FOOT_STEP_RADIUS && stepDist >= minFold * 0.5 && distSqr >= minFoldSq) {
                     withinReach = true;
                 }
             }
