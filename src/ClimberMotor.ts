@@ -563,7 +563,7 @@ export class ClimberMotor {
         if (
             !moveInFlightToThisAnchor &&
             (distanceSqr(origin.posX, origin.posY, anchor.posX, anchor.posY) > reach * reach ||
-             distanceSqr(origin.posX, origin.posY, anchor.posX, anchor.posY) < minFold * minFold * 0.25)
+                distanceSqr(origin.posX, origin.posY, anchor.posX, anchor.posY) < minFold * minFold * 0.25)
         ) {
             if (import.meta.env?.DEV) {
                 console.log(`[motor] ${kind}${side} initial unreachable: a${anchor.index} d=${Math.hypot(origin.posX - anchor.posX, origin.posY - anchor.posY).toFixed(1)} reach=${reach.toFixed(1)} minFold=${minFold.toFixed(1)}`);

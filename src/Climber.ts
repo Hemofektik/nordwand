@@ -704,12 +704,24 @@ export class Climber {
         const minFold = 2 * bone * Math.sin(KNEE_MIN_ANGLE / 2);
         // Small-step radius from the foot's own anchor (hybrid reach).
         const FOOT_STEP_RADIUS = 15;
+        // Pelvis reference: targets at or above pelvis level need a fully
+        // extended leg plus a raised hip - a high-risk posture (the push has
+        // nothing left to extend and the body must be hauled up by the arms
+        // mid-step). Prefer anchors BELOW the pelvis; only fall back to
+        // above-pelvis candidates when nothing else is in the band (avoids
+        // starvation on overhangs where every nearby hold is high).
+        const pelvis = this.phys.particleStates[this.skeleton.pelvisParticleIndex];
+        const pelvisY = pelvis?.posY ?? Number.POSITIVE_INFINITY;
         let best: WallAnchor | undefined;
         let bestDist = Number.POSITIVE_INFINITY;
         // Highest candidate within the +-15px band around the butt: the band
         // caps the leap, highest-in-band makes the feet climb.
         let cappedBest: WallAnchor | undefined;
         let cappedBestY = Number.POSITIVE_INFINITY;
+        // Same preference restricted to below-pelvis anchors (the safe
+        // posture); used first, with the unrestricted band as fallback.
+        let safeBest: WallAnchor | undefined;
+        let safeBestY = Number.POSITIVE_INFINITY;
         for (const anchor of this.wall.wallAnchors) {
             if (occupied.has(anchor.index) || this.motor.isBlacklisted(anchor.index)) continue;
             if (this.releasedThisCycle.has(anchor.index)) continue;
@@ -750,6 +762,13 @@ export class Climber {
                 ? Math.min(leapRefY, ownAnchor.posY)
                 : leapRefY;
             if (anchor.posY >= bandRefY - FOOT_LEAP_MAX_RISE && anchor.posY <= bandRefY + FOOT_LEAP_MAX_RISE) {
+                // Below-pelvis candidates first (safer posture).
+                if (anchor.posY >= pelvisY) {
+                    if (safeBest === undefined || anchor.posY < safeBestY) {
+                        safeBest = anchor;
+                        safeBestY = anchor.posY;
+                    }
+                }
                 if (cappedBest === undefined || anchor.posY < cappedBestY) {
                     cappedBest = anchor;
                     cappedBestY = anchor.posY;
@@ -762,7 +781,10 @@ export class Climber {
                 }
             }
         }
-        if (cappedBest !== undefined) {
+        // Preference order: below-pelvis band > unrestricted band > shortest leap.
+        if (safeBest !== undefined) {
+            best = safeBest;
+        } else if (cappedBest !== undefined) {
             best = cappedBest;
         }
         if (best !== undefined) {
