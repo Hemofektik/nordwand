@@ -288,6 +288,27 @@ export class Climber {
         // planted, its own anchor is occupied and cannot be picked (no zero-
         // progress "reach"). If no candidate exists we substitute to HandReach
         // with BOTH feet still planted - the ≤1-free invariant (§9.2) holds.
+        //
+        // EXCEPTION - the level start: at the first LegReach the body is
+        // braced by ALL FOUR limbs. Releasing the drive leg lets the butt
+        // SAG into the hanging pose; a target picked from the pre-release
+        // (braced, higher) pose can be beyond the sagged body's reach
+        // (measured on seed 505: first pick a83 at d(butt)=24.5 > bone sum
+        // 24, timed out and blacklisted). So on the very first cycle the
+        // foot is released FIRST, the physics settles briefly, and only
+        // then is the target picked from the settled (sagged, true) pose -
+        // exactly the user's "select the target anchor after everything is
+        // settled".
+        const levelStartPick = this.clock < 0.05 && this.target === undefined;
+        if (levelStartPick && this.skeleton.isGrabbing("foot", freeSide)) {
+            const anchorIndex = this.skeleton.grabConstraint("foot", freeSide).wallAnchorIndex;
+            this.footReleasedAnchor[freeSide] = anchorIndex;
+            this.releasedThisCycle.add(anchorIndex);
+            this.motor.releaseFoot(freeSide);
+            this.phys.settle(0.5);
+            // fall through to the normal pick below - the body is now in
+            // its true hanging pose.
+        }
         if (this.target === undefined) {
             const relaxed = this.ladderStep >= 2;
             this.target = this.pickFootTarget(freeSide, relaxed);
