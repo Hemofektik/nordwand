@@ -99,16 +99,16 @@ const STRAIGHT_SPINE_ANGLE = Math.PI;
 //  IK targets - soft target tracking alone lets load shove joints past
 //  straight into inversion, measured on seed 101: knees reached -169deg
 //  signed bend = ~91deg backwards, hips rotated the full circle) ---
-/** Hip angle window. Convention (measured): hip angle = pi with the thigh
- *  hanging straight down, < pi = forward swing (toward the wall), > pi =
- *  backward swing, 0 = thigh pointing straight up-forward (impossible).
- *  Only the MIN limit is anatomical here: hip flexion past ~45deg from
- *  vertical up-forward is the shoulder-like rotation the user sees. The
- *  MAX side stays open (2pi = never violated): thigh-up-behind is a
- *  legitimate high-step pose, and a ceiling near 2pi makes the positional
- *  projection fire constantly on legal poses - with the foot pinned it
- *  then rotates the pelvis and destabilizes the body (measured: seed 101
- *  dropped from 276px to 55px neck rise). */
+/** Hip window: linear [0.25pi, 2pi]. The hip angle is BODY-relative
+ *  (pelvis->butt vs butt->knee), so it cannot distinguish "thigh toward
+ *  the wall" from "thigh behind the back" - both map to overlapping angle
+ *  ranges as the body orientation flips (measured: the same reading 259
+ *  covers the settled splay AND wall-side poses; wall-side high steps
+ *  need hip~165 which any tighter window forbids). The backward-rotation
+ *  constraint is enforced in WORLD space at the pick instead: foot
+ *  targets must lie on the wall side of the pelvis (Climber.pickFootTarget).
+ *  The min bound (0.25pi) still forbids the thigh folding up-forward
+ *  against the torso. */
 const HIP_MIN_ANGLE = Math.PI * 0.25;
 const HIP_MAX_ANGLE = Math.PI * 2;
 

@@ -855,6 +855,16 @@ export class Climber {
                 }
             }
             if (!withinReach) continue;
+            // Rule 2.5 (world-space backwards guard): the user's "leg rotates
+            // backwards behind the body" happens when the free foot reaches
+            // for an anchor on the FAR side of the body (away from the
+            // wall) - the thigh then rotates backward behind the body. The
+            // hip angle is body-relative and cannot distinguish this; the
+            // wall direction is world-fixed. The body hangs on the -x side
+            // of its anchors (anchors at x+6..8, wall face points -x): a
+            // foot target is on the wall side when its x is >= the butt x;
+            // anything well to the LEFT of the body is behind the back.
+            if (anchor.posX < origin.posX - 6) continue;
             // Rule 3 (CoM) is checked by the invariant contract after the move.
             // Preference: the HIGHEST anchor within the +-15px band around
             // the butt OR around the foot's own anchor (hybrid-admitted

@@ -558,11 +558,6 @@ export class SpringPhysics {
             // violations are transient load excursions; the impulse walks
             // them back within a few steps. Measured with the strict pi
             // knee ceiling: residual violations are rare (44/4802 samples)
-            // and shallow (<=15deg past straight; deeper readings were a
-            // +-180deg wrap artifact of near-straight knees). Elaborate
-            // additions - velocity stops, positional projections, tangential
-            // cancellation - all destabilize the soft-body climb dynamics
-            // and stall it (each measured separately).
             if (angularC.minAngle !== undefined && angularC.maxAngle !== undefined) {
                 const limitDelta = this.jointLimitDelta(currentAngle, angularC.minAngle, angularC.maxAngle);
                 if (limitDelta !== 0) {
@@ -613,8 +608,30 @@ export class SpringPhysics {
     /** Signed angular correction to bring the angle back into the allowed
      *  window: 0 when inside, positive when below minAngle (angle must
      *  increase), negative when above maxAngle. Matches the target-tracking
-     *  impulse convention (positive delta = increase angle). */
+     *  impulse convention (positive delta = increase angle).
+     *  ARC-AWARE: the window is an ARC through 0/2pi - when minAngle >
+     *  maxAngle the allowed region is [0,maxAngle] U [minAngle,2pi) (the
+     *  forbidden arc (maxAngle, minAngle) through pi). The hip needs this:
+     *  its legal arc is through 0 (thigh down along the spine) and the
+     *  forbidden region is the whole backward hemisphere through pi
+     *  (measured: the linear window permitted the thigh rotating backward
+     *  behind the body - user-reported "leg rotates backwards"). */
     private jointLimitDelta(currentAngle: number, minAngle: number, maxAngle: number): number {
+        if (minAngle > maxAngle) {
+            // Arc window through 0: allowed = [0, max] U [min, 2pi).
+            if (currentAngle <= maxAngle) {
+                return wrapAngleNegPiToPi(maxAngle - currentAngle);
+            }
+            if (currentAngle >= minAngle) {
+                return wrapAngleNegPiToPi(minAngle - currentAngle);
+            }
+            // Deep in the forbidden arc: pull toward the NEARER edge.
+            const distToMin = currentAngle - minAngle;
+            const distToMax = maxAngle + Math.PI * 2 - currentAngle;
+            return distToMin < distToMax
+                ? wrapAngleNegPiToPi(minAngle - currentAngle)
+                : wrapAngleNegPiToPi(maxAngle - currentAngle);
+        }
         if (currentAngle < minAngle) {
             return wrapAngleNegPiToPi(minAngle - currentAngle);
         }
