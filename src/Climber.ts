@@ -803,9 +803,22 @@ export class Climber {
         // not the load-stretched ones. A stretched envelope made the pick
         // accept targets the arm could never reach (verified on seed 101:
         // a76 at 27.7 vs true IK reach 25.5 - the hand froze 8px short).
-        const reach = this.boneSum("hand") * (relaxed ? REACH_FRACTION_RELAXED : REACH_FRACTION) + REACH_MARGIN;
+        const armLen = this.boneSum("hand");
+        const reach = armLen * (relaxed ? REACH_FRACTION_RELAXED : REACH_FRACTION) + REACH_MARGIN;
+        // The +REACH_MARGIN is a bet that the body swings toward the target
+        // during the reach (the extended arm hauls the body closer). When
+        // the bet fails - compressed pose, feet planted - the target stays
+        // beyond the static arm and the move times out (seed 505: 22 hand
+        // timeouts/40s, anchors at d(neck) 23-23.5 vs arm 20). Prefer
+        // targets within the STATIC arm; only spend the swing margin when
+        // nothing closer fits.
+        const staticReach = armLen * (relaxed ? REACH_FRACTION_RELAXED : REACH_FRACTION);
         let best: WallAnchor | undefined;
         let bestY = Number.POSITIVE_INFINITY;
+        // Highest candidate beyond the static reach (margin-dependent) -
+        // fallback only.
+        let stretchBest: WallAnchor | undefined;
+        let stretchBestY = Number.POSITIVE_INFINITY;
         for (const anchor of this.wall.wallAnchors) {
             if (occupied.has(anchor.index) || this.motor.isBlacklisted(anchor.index)) continue;
             if (this.releasedThisCycle.has(anchor.index)) continue;
@@ -813,11 +826,21 @@ export class Climber {
             if (anchor.posY > minAboveY) continue;
             const dx = anchor.posX - origin.posX;
             const dy = anchor.posY - origin.posY;
-            if (dx * dx + dy * dy > reach * reach) continue;
-            if (anchor.posY < bestY) {
-                best = anchor;
-                bestY = anchor.posY;
+            const distSqr = dx * dx + dy * dy;
+            if (distSqr > reach * reach) continue;
+            if (distSqr <= staticReach * staticReach) {
+                if (anchor.posY < bestY) {
+                    best = anchor;
+                    bestY = anchor.posY;
+                }
+            } else if (anchor.posY < stretchBestY) {
+                stretchBest = anchor;
+                stretchBestY = anchor.posY;
             }
+        }
+        if (best === undefined && stretchBest !== undefined) {
+            best = stretchBest;
+            this.log(`hand pick: only beyond-static-arm candidates -> using swing margin`);
         }
         if (best !== undefined) {
             this.log(`hand target: ${best.index} (y=${best.posY.toFixed(0)}, relaxed=${relaxed})`);
