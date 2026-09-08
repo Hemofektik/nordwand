@@ -804,6 +804,21 @@ export class Climber {
         // starvation on overhangs where every nearby hold is high).
         const pelvis = this.phys.particleStates[this.skeleton.pelvisParticleIndex];
         const pelvisY = pelvis?.posY ?? Number.POSITIVE_INFINITY;
+        // The LATCHED (other) foot's anchor: the free foot's target must sit
+        // BETWEEN the latched foot and the pelvis. A target BELOW the latched
+        // foot forces the latched leg into full extension (it is the high
+        // brace of the bridge) while the free leg reaches down - the low
+        // anchor then cannot be latched because the body cannot descend
+        // without the latched leg extending past its limit (user-reported
+        // stuck; measured: 14-36% of foot latches landed below the other
+        // foot). The y ordering: pelvisY < latchedY (below = larger y), so
+        // the acceptable band is [pelvisY, latchedFootY].
+        const otherFoot = 1 - side;
+        let latchedFootY = Number.POSITIVE_INFINITY;
+        if (this.skeleton.isGrabbing("foot", otherFoot)) {
+            const oc = this.skeleton.grabConstraint("foot", otherFoot);
+            latchedFootY = this.wall.wallAnchors[oc.wallAnchorIndex]?.posY ?? Number.POSITIVE_INFINITY;
+        }
         let best: WallAnchor | undefined;
         let bestDist = Number.POSITIVE_INFINITY;
         // Highest candidate within the +-15px band around the butt: the band
@@ -854,16 +869,23 @@ export class Climber {
                 ? Math.min(leapRefY, ownAnchor.posY)
                 : leapRefY;
             if (anchor.posY >= bandRefY - FOOT_LEAP_MAX_RISE && anchor.posY <= bandRefY + FOOT_LEAP_MAX_RISE) {
-                // Below-pelvis candidates first (safer posture).
-                if (anchor.posY >= pelvisY) {
+                // Preference tiers:
+                // 1. Between the latched foot and the pelvis (the user's
+                //    rule): safe posture, both legs stay bent.
+                // 2. Below-pelvis but below the latched foot (the latched
+                //    leg must extend - less safe but workable).
+                // 3. Anything in the band (fallback, avoids starvation).
+                if (anchor.posY >= pelvisY && anchor.posY <= latchedFootY) {
                     if (safeBest === undefined || anchor.posY < safeBestY) {
                         safeBest = anchor;
                         safeBestY = anchor.posY;
                     }
                 }
-                if (cappedBest === undefined || anchor.posY < cappedBestY) {
-                    cappedBest = anchor;
-                    cappedBestY = anchor.posY;
+                if (anchor.posY >= pelvisY) {
+                    if (cappedBest === undefined || anchor.posY < cappedBestY) {
+                        cappedBest = anchor;
+                        cappedBestY = anchor.posY;
+                    }
                 }
             } else if (cappedBest === undefined) {
                 const dist = Math.sqrt(distSqr);
