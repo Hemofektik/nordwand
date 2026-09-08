@@ -566,8 +566,26 @@ export class SpringPhysics {
             if (angularC.minAngle !== undefined && angularC.maxAngle !== undefined) {
                 const limitDelta = this.jointLimitDelta(currentAngle, angularC.minAngle, angularC.maxAngle);
                 if (limitDelta !== 0) {
-                    const cappedDelta = clampAbs(limitDelta, LIMIT_MAX_CORRECTION);
-                    const strength = cappedDelta * ANGULAR_TIGHTNESS * dt * angularC.tightnessFactor * 3;
+                    // Two-regime correction. SHALLOW violations (<= the cap)
+                    // get the gentle proportional impulse - that regime keeps
+                    // the soft-body dynamics stable. DEEP violations (push
+                    // load shoving a knee through straight into inversion,
+                    // measured: 2.5s sustained episodes at 150deg past
+                    // straight during Push) need a correction that actually
+                    // WINS against the push target-tracking, whose strength
+                    // scales with the full target error (~3rad). The old
+                    // flat 0.15rad cap made the limit term 20x weaker than
+                    // the push term, so the joint sat inverted for seconds.
+                    // The deep regime scales linearly with depth but stays
+                    // at half the target-tracking gain: strong enough to
+                    // hold the window, gentle enough not to destabilize
+                    // reaches (a full-strength version stalled 5/12 matrix
+                    // anchors - measured).
+                    const absDelta = Math.abs(limitDelta);
+                    const effectiveDelta = absDelta <= LIMIT_MAX_CORRECTION
+                        ? limitDelta
+                        : limitDelta * (LIMIT_MAX_CORRECTION / absDelta) * (absDelta / Math.PI) * 4;
+                    const strength = effectiveDelta * ANGULAR_TIGHTNESS * dt * angularC.tightnessFactor * 3;
                     const invDistance0 = (strength * state0.inverseMass) / length0;
                     const invDistance1 = ((strength * state1.inverseMass) / length1) * 2.0;
                     const invDistance2 = (strength * state2.inverseMass) / length2;

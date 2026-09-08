@@ -395,8 +395,26 @@ export class ClimberMotor {
             this.phys.angularConstraints[defined(this.skeleton.kneeJointACIndex[side], "Missing knee index")],
             "Missing knee constraint",
         );
+        // RECOVERY GATE (measured on seed 101, t=10-16s): pushing with an
+        // inverted knee (actual angle past straight into the 300-360deg
+        // region) makes the stuck state self-sustaining - the push load
+        // (body rising against a pinned foot) drives the joint past
+        // straight faster than the limit corrections recover it, and the
+        // knee sits at 359deg for seconds (user: "knee bends in the wrong
+        // direction"). While the actual knee is outside its window, the
+        // push STOPS: the knee target moves back into the window and the
+        // body weight alone re-bends the joint. Only a windowed knee may
+        // push.
+        const kneeNow = currentConstraintAngle(this.skeleton, defined(this.skeleton.kneeJointACIndex[side], "Missing knee index"));
+        const kneeInWindow = kneeNow >= KNEE_MIN_ANGLE && kneeNow <= Math.PI;
         hip.targetAngle = moveJointAngle(hip.targetAngle, STRAIGHT_HIP_ANGLE, dtOrDefault(), HIP_MIN_ANGLE, HIP_MAX_ANGLE, REACH_ANGLE_SPEED);
         knee.targetAngle = moveJointAngle(knee.targetAngle, STRAIGHT_KNEE_ANGLE, dtOrDefault(), KNEE_MIN_ANGLE, Math.PI, REACH_ANGLE_SPEED);
+        if (!kneeInWindow) {
+            // Recovering: hold the planted arms (poseNonMovingLimbs covers
+            // them) and wait for the knee to come back. Not "latched" -
+            // the push goal is not met.
+            return "in-progress";
+        }
         // Planted-arm adaptation (§6.4): every latched arm re-solves toward a
         // shortened virtual target so the elbow goes extension -> flex as the
         // body rises. The skeleton adapts to the push, never fights it.
@@ -486,6 +504,26 @@ export class ClimberMotor {
                 const anchor = this.wall.wallAnchors[this.skeleton.grabConstraint("hand", planted).wallAnchorIndex];
                 if (anchor !== undefined) {
                     this.pullHand(planted, anchor);
+                }
+            }
+            // Latched-knee guard (measured on seed 404: 418 knee-inversion
+            // frames, ALL on the latched leg during HandReach): the
+            // pullHand haul yanks the body up against the pinned foot and
+            // the latched knee hyperextends through straight. A bent knee
+            // has angular reserve against that load; an extended one has
+            // none. When the actual knee approaches/passes extension the
+            // recovery target is a DEEP bend (120deg), not the window edge:
+            // holding the edge gives zero reserve and the load pins the
+            // knee there (measured: tgt=171 with actual stuck at 237).
+            if (this.skeleton.isGrabbing("foot", planted)) {
+                const knee = defined(
+                    this.phys.angularConstraints[defined(this.skeleton.kneeJointACIndex[planted], "Missing knee index")],
+                    "Missing knee constraint",
+                );
+                const kneeNow = currentConstraintAngle(this.skeleton, defined(this.skeleton.kneeJointACIndex[planted], "Missing knee index"));
+                const recoveryTarget = Math.PI * (120 / 180);
+                if (kneeNow > KNEE_MAX_ANGLE) {
+                    knee.targetAngle = moveJointAngle(knee.targetAngle, recoveryTarget, dtOrDefault(), KNEE_MIN_ANGLE, KNEE_MAX_ANGLE, REACH_ANGLE_SPEED * 2);
                 }
             }
         }
