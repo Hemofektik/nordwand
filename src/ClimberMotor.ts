@@ -84,7 +84,24 @@ const ELBOW_MAX_ANGLE = Math.PI * (320 / 180);
  *  excluded); the physics solver's hard knee floor stays at 0.05pi for
  *  load compression. */
 export const KNEE_MIN_ANGLE = Math.PI * (40 / 180);
-const KNEE_MAX_ANGLE = Math.PI * 0.95;
+/** Knee window ceiling: 2pi - KNEE_MIN, i.e. the window is the FULL fold
+ *  range [40deg, 320deg] with only the wrap singularity (near 0/2pi)
+ *  forbidden. WHY the reflex side (180..320) must be legal: the signed
+ *  knee angle cannot encode the bend SIDE - which mirror solution reads
+ *  <pi flips with target height. For a target ABOVE the buttocks the
+ *  WALL-SIDE knee (between body and wall, the user's rule) reads as the
+ *  REFLEX angle (>pi): measured on seed 101 a50 (22px above-left of the
+ *  butt) the wall-side candidate reads 228deg and the behind-the-back
+ *  mirror 132deg. The old ceiling at 0.95pi forbade the reflex reading,
+ *  so every above-hip reach fell back to the behind-the-back mirror -
+ *  exactly the forbidden pose (user screenshot: knee jutting behind the
+ *  body while the foot stands on the wall). The reflex region here is
+ *  NOT the old inversion failure: inversion is the singularity near
+ *  0/2pi (knee at 359deg = collinear through the wrong side), and that
+ *  region stays forbidden by both this window and the physics limit.
+ *  The world-side rule (admissibleLegJoint) picks the correct side; the
+ *  window merely stops the clamps from fighting the correct pose. */
+const KNEE_MAX_ANGLE = Math.PI * 2 - KNEE_MIN_ANGLE;
 /** Push goal: knee fully straight (pushWithLeg latches at 0.12 of this). */
 export const FULLY_STRAIGHT_KNEE_ANGLE = Math.PI;
 /** Minimum origin-to-foot distance the knee fold allows: with equal bones b
@@ -307,9 +324,10 @@ export class ClimberMotor {
     }
 
     /** Install hard anatomical limits on hips and knees in the physics
-     *  solver. Knees: [KNEE_MIN, pi] - bend side below straight, never
-     *  hyperextended. Hips: [HIP_MIN, HIP_MAX] - the thigh swings forward
-     *  but never rotates around like a shoulder. */
+     *  solver. Knees: [KNEE_MIN, 2pi - KNEE_MIN] - the full fold range on
+     *  BOTH bend sides, with only the wrap singularity (near 0/2pi, the
+     *  visible backwards bend) forbidden. Hips: [HIP_MIN, HIP_MAX] - the
+     *  thigh swings forward but never rotates around like a shoulder. */
     private applyJointLimits(): void {
         for (let side = 0; side < 2; side++) {
             const hip = defined(
@@ -322,16 +340,22 @@ export class ClimberMotor {
             );
             hip.minAngle = HIP_MIN_ANGLE;
             hip.maxAngle = HIP_MAX_ANGLE;
-            // The knee's anatomical constraint is one-directional bend: the
-            // angle (in [0,2pi)) must stay in (0, pi]. ANY angle past pi is
-            // a visible backwards bend - the earlier 1.17pi tolerance still
-            // read as knees bending both ways (user-verified in browser).
+            // The knee's anatomical constraint is the FOLD RANGE: the angle
+            // (in [0,2pi)) must stay inside [KNEE_MIN, 2pi-KNEE_MIN]. The
+            // reflex readings (pi..2pi-KNEE_MIN) are legal poses - the same
+            // geometric fold measured on the other side, REQUIRED for
+            // wall-side knees on above-hip targets (the signed convention
+            // flips with target height; see KNEE_MAX_ANGLE). The old strict
+            // ceiling at pi forced every above-hip reach onto the
+            // behind-the-back mirror. What stays forbidden is the wrap
+            // singularity near 0/2pi - the collinear-through-the-other-side
+            // pose that read as "knee bends both ways" (user-verified).
             // Angles below the IK's KNEE_MIN are deep-but-natural folds (a
             // loaded knee legitimately compresses past 63deg - a hard floor
             // there fights the squat and stalls the climb, measured on seed
             // 303), so the floor only guards the fold singularity at 0.
             knee.minAngle = Math.PI * 0.05;
-            knee.maxAngle = Math.PI;
+            knee.maxAngle = KNEE_MAX_ANGLE;
         }
     }
 
@@ -406,9 +430,14 @@ export class ClimberMotor {
         // body weight alone re-bends the joint. Only a windowed knee may
         // push.
         const kneeNow = currentConstraintAngle(this.skeleton, defined(this.skeleton.kneeJointACIndex[side], "Missing knee index"));
-        const kneeInWindow = kneeNow >= KNEE_MIN_ANGLE && kneeNow <= Math.PI;
+        // Window check matches the fold-range window [KNEE_MIN, 2pi-KNEE_MIN]
+        // (see KNEE_MAX_ANGLE): a reflex reading (pi..2pi-KNEE_MIN) is a
+        // legal wall-side knee pose, NOT an inversion - only the wrap
+        // singularity near 0/2pi is. The old `<= pi` test would have
+        // permanently stalled pushes from legal above-hip wall-side poses.
+        const kneeInWindow = kneeNow >= KNEE_MIN_ANGLE && kneeNow <= KNEE_MAX_ANGLE;
         hip.targetAngle = moveJointAngle(hip.targetAngle, STRAIGHT_HIP_ANGLE, dtOrDefault(), HIP_MIN_ANGLE, HIP_MAX_ANGLE, REACH_ANGLE_SPEED);
-        knee.targetAngle = moveJointAngle(knee.targetAngle, STRAIGHT_KNEE_ANGLE, dtOrDefault(), KNEE_MIN_ANGLE, Math.PI, REACH_ANGLE_SPEED);
+        knee.targetAngle = moveJointAngle(knee.targetAngle, STRAIGHT_KNEE_ANGLE, dtOrDefault(), KNEE_MIN_ANGLE, KNEE_MAX_ANGLE, REACH_ANGLE_SPEED);
         if (!kneeInWindow) {
             // Recovering: hold the planted arms (poseNonMovingLimbs covers
             // them) and wait for the knee to come back. Not "latched" -
@@ -515,6 +544,10 @@ export class ClimberMotor {
             // recovery target is a DEEP bend (120deg), not the window edge:
             // holding the edge gives zero reserve and the load pins the
             // knee there (measured: tgt=171 with actual stuck at 237).
+            // NOTE: only the NATURAL-side reading (>KNEE_MAX would be a
+            // legal reflex pose now; the inversion risk is the wrap
+            // singularity near 0/2pi, i.e. kneeNow > KNEE_MAX_ANGLE means
+            // past 320deg = approaching the singularity from above).
             if (this.skeleton.isGrabbing("foot", planted)) {
                 const knee = defined(
                     this.phys.angularConstraints[defined(this.skeleton.kneeJointACIndex[planted], "Missing knee index")],
@@ -805,16 +838,55 @@ export class ClimberMotor {
             { x: originX + proximal * (alongX + perpX), y: originY + proximal * (alongY + perpY) },
             { x: originX + proximal * (alongX - perpX), y: originY + proximal * (alongY - perpY) },
         ];
-        const admissible = candidates.filter(j => {
+        // WORLD-SIDE KNEE RULE: the knee must stay BETWEEN the body and the
+        // wall - never behind the player's back. The wall anchors sit on the
+        // +x side and the body hangs on the -x side, so a knee on the far
+        // (-x) side of the origin->target line bends backwards behind the
+        // back (user screenshot: knee jutting LEFT while the foot stands on
+        // the wall, pressing the body around). The knee angle alone cannot
+        // express this (both bend sides can be inside [KNEE_MIN, KNEE_MAX]);
+        // the constraint lives in WORLD space. Test each candidate knee
+        // against the leg line interpolated at the knee's own height, with a
+        // 1.5px tolerance for near-collinear reaches where both solutions
+        // sit essentially ON the line.
+        const lineDX = targetX - originX;
+        const lineDY = targetY - originY;
+        const isWallSideKnee = (j: { x: number; y: number }): boolean => {
+            const t = Math.abs(lineDY) > 0.0001 ? (j.y - originY) / lineDY : 0.5;
+            const lineX = originX + lineDX * t;
+            return j.x >= lineX - 1.5;
+        };
+        const wallSide = candidates.filter(isWallSideKnee);
+        const angleAdmissible = (j: { x: number; y: number }): boolean => {
             const kneeAngle = jointAngle(originX, originY, j.x, j.y, targetX, targetY);
             return kneeAngle >= KNEE_MIN_ANGLE - 0.05 && kneeAngle <= KNEE_MAX_ANGLE + 0.05;
-        });
+        };
+        // Which mirror candidate is the WALL-SIDE knee flips with target
+        // height: below the origin the wall-side solution reads <pi
+        // (in-window); ABOVE the origin it reads >pi - the reflex reading.
+        // The reflex region is now INSIDE the knee window (see
+        // KNEE_MAX_ANGLE), so the wall-side rule is a HARD filter: the
+        // behind-the-back mirror is never commanded. Only when BOTH
+        // candidates fold behind (near-collinear reach, both essentially on
+        // the line) does continuity over the full pair decide.
+        const wallSideAdmissible = wallSide.filter(angleAdmissible);
+        const admissible = candidates.filter(angleAdmissible);
         // NOTE: deliberately knee-only filtering. Adding a hip-admissibility
         // filter here starves foot reaches whose only solutions swing the
         // thigh past the hip window (measured on seed 202: 55px vs 227px) -
         // the hip is guarded by the target clamp in moveJointAngle plus the
         // solver's hard limit instead.
-        const pool = admissible.length > 0 ? admissible : candidates;
+        // Preference: wall-side + admissible (knees in front, the user's
+        // rule) > wall-side (angle clamp will settle, never behind) >
+        // angle-admissible (only when NO wall-side candidate exists) >
+        // both candidates (near-collinear reaches; continuity decides).
+        const pool = wallSideAdmissible.length > 0
+            ? wallSideAdmissible
+            : wallSide.length > 0
+                ? wallSide
+                : admissible.length > 0
+                    ? admissible
+                    : candidates;
         let best = pool[0]!;
         let bestDist = distanceSqr(currentKneeX, currentKneeY, best.x, best.y);
         for (let i = 1; i < pool.length; i++) {

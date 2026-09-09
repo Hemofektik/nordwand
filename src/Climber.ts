@@ -74,12 +74,57 @@ export class Climber {
     /** y of the hand anchor released this cycle (for Q14 relaxation). */
     /** Consecutive substitutions without a successful latch (§8.4). */
     private substitutionCount = 0;
+    /** Phase the lean-out haul interrupted. The haul used to ALWAYS resume
+     *  into HandReach - a LegReach interrupted by the lean-out never got to
+     *  run its full window: haul -> HandReach -> the hand reach leans the
+     *  body out again -> LegReach killed at 0.5s again (measured on seed
+     *  101 t=20-30s: foot target a103/a104 picked 6x, never latched, feet
+     *  pinned on a94 for the whole window). Resuming the interrupted phase
+     *  gives the leg move a clear window right after the haul. */
+    private leanOutResumePhase: "LegReach" | "HandReach" | undefined;
     /** Side the HandReach move reaches with (captured once per move). */
     private handReachSide = -1;
     public clock = 0;
 
     /** Counts completed latches (observable; used by tests as cycle proxy). */
     public grabCount = 0;
+
+    /** Deterministic RNG state (mulberry32) for pick randomization. A FIXED
+     *  seed keeps every run reproducible (tests stay deterministic) while the
+     *  pick sequence varies across cycles - a stuck loop that would re-choose
+     *  the same greedy target now has a chance to take a different candidate
+     *  and break out. */
+    private rngState = 0x9e3779b9;
+
+    /** Uniform random in [0,1) from the deterministic RNG. */
+    private nextRandom(): number {
+        this.rngState |= 0;
+        this.rngState = (this.rngState + 0x6d2b79f5) | 0;
+        let t = Math.imul(this.rngState ^ (this.rngState >>> 15), 1 | this.rngState);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    }
+
+    /** Rank-weighted random draw from a ranked candidate list: rank 0 (the
+     *  greedy choice) is most likely, each further rank decays by `spread`.
+     *  spread 0.55 = strong greedy bias (normal climbing); spread 0.85 =
+     *  near-uniform (stall ladder - randomness IS the escape strategy). */
+    private pickRanked<T>(ranked: T[], spread: number): T | undefined {
+        if (ranked.length === 0) return undefined;
+        if (ranked.length === 1) return ranked[0];
+        let total = 0;
+        const weights = ranked.map((_, i) => {
+            const w = Math.pow(spread, i);
+            total += w;
+            return w;
+        });
+        let roll = this.nextRandom() * total;
+        for (let i = 0; i < ranked.length; i++) {
+            roll -= weights[i]!;
+            if (roll <= 0) return ranked[i];
+        }
+        return ranked[ranked.length - 1];
+    }
 
     public constructor(phys: SpringPhysics, wall: Wall, skeleton: Skeleton) {
         this.phys = phys;
@@ -141,6 +186,7 @@ export class Climber {
             this.regrabFreeHand(1);
             this.pullHoldUntil = 0.8;
             this.lastPullStartNeckY = this.neck().posY;
+            this.leanOutResumePhase = this.phase === "HandReach" ? "HandReach" : "LegReach";
             this.beginPhase("PullUp");
             return;
         }
@@ -168,6 +214,7 @@ export class Climber {
                 this.regrabFreeHand(1);
                 this.pullHoldUntil = 0.8;
                 this.lastPullStartNeckY = this.neck().posY;
+                this.leanOutResumePhase = this.phase === "HandReach" ? "HandReach" : "LegReach";
                 this.beginPhase("PullUp");
                 return;
             }
@@ -456,9 +503,18 @@ export class Climber {
             }
         }
         if (this.phaseElapsed >= this.pullHoldUntil) {
-            this.log("PullUp: hauled toward the hands");
             this.pullHoldUntil = 0;
-            this.beginPhase("HandReach");
+            // A lean-out haul resumes the phase it interrupted (see
+            // leanOutResumePhase); a substitution haul goes to HandReach.
+            const resume = this.leanOutResumePhase;
+            this.leanOutResumePhase = undefined;
+            if (resume !== undefined) {
+                this.log(`PullUp: hauled back to the wall -> resume ${resume}`);
+                this.beginPhase(resume);
+            } else {
+                this.log("PullUp: hauled toward the hands");
+                this.beginPhase("HandReach");
+            }
         }
     }
 
@@ -843,15 +899,19 @@ export class Climber {
             latchedFootY = this.wall.wallAnchors[oc.wallAnchorIndex]?.posY ?? Number.POSITIVE_INFINITY;
         }
         let best: WallAnchor | undefined;
-        let bestDist = Number.POSITIVE_INFINITY;
-        // Highest candidate within the +-15px band around the butt: the band
-        // caps the leap, highest-in-band makes the feet climb.
-        let cappedBest: WallAnchor | undefined;
-        let cappedBestY = Number.POSITIVE_INFINITY;
-        // Same preference restricted to below-pelvis anchors (the safe
-        // posture); used first, with the unrestricted band as fallback.
-        let safeBest: WallAnchor | undefined;
-        let safeBestY = Number.POSITIVE_INFINITY;
+        // ALL band candidates per preference tier, in preference order
+        // (highest first within a tier): the final pick is a rank-weighted
+        // RANDOM draw instead of a deterministic greedy take. Randomization
+        // among EQUALLY-RULED alternatives breaks stuck loops (the greedy
+        // pick re-chose the same infeasible anchor every cycle); the hard
+        // filters and the tier ORDER are untouched.
+        // Tier 1: between the latched foot and the pelvis (safe posture).
+        const safeTier: WallAnchor[] = [];
+        // Tier 2: below pelvis but below the latched foot (latched leg may
+        // extend - less safe but workable).
+        const cappedTier: WallAnchor[] = [];
+        // Fallback: shortest-leap candidates (outside the band).
+        const leapTier: WallAnchor[] = [];
         for (const anchor of this.wall.wallAnchors) {
             if (occupied.has(anchor.index) || this.motor.isBlacklisted(anchor.index)) continue;
             if (this.releasedThisCycle.has(anchor.index)) continue;
@@ -917,31 +977,31 @@ export class Climber {
                 //    leg must extend - less safe but workable).
                 // 3. Anything in the band (fallback, avoids starvation).
                 if (anchor.posY >= pelvisY && anchor.posY <= latchedFootY) {
-                    if (safeBest === undefined || anchor.posY < safeBestY) {
-                        safeBest = anchor;
-                        safeBestY = anchor.posY;
-                    }
+                    safeTier.push(anchor);
                 }
                 if (anchor.posY >= pelvisY) {
-                    if (cappedBest === undefined || anchor.posY < cappedBestY) {
-                        cappedBest = anchor;
-                        cappedBestY = anchor.posY;
-                    }
+                    cappedTier.push(anchor);
                 }
-            } else if (cappedBest === undefined) {
-                const dist = Math.sqrt(distSqr);
-                if (best === undefined || dist < bestDist) {
-                    best = anchor;
-                    bestDist = dist;
-                }
+            } else if (cappedTier.length === 0 && safeTier.length === 0) {
+                leapTier.push({ ...anchor, dist: Math.sqrt(distSqr) } as WallAnchor & { dist: number });
             }
         }
+        // Sort each tier by its preference (highest anchor first; the leap
+        // tier by shortest leap) so the ranked draw biases toward the old
+        // greedy choice while remaining free to take an alternative.
+        safeTier.sort((a, b) => a.posY - b.posY);
+        cappedTier.sort((a, b) => a.posY - b.posY);
+        leapTier.sort((a, b) => (a as WallAnchor & { dist: number }).dist - (b as WallAnchor & { dist: number }).dist);
+        // The stall ladder FLATTENS the draw (near-uniform): once the greedy
+        // picks have failed repeatedly, trying genuinely different anchors
+        // is the escape strategy, not a risk. Normal climbing keeps a strong
+        // greedy bias (small steps, measured posture rules) with only mild
+        // variety among siblings.
+        const spread = relaxed ? 0.85 : 0.4;
         // Preference order: below-pelvis band > unrestricted band > shortest leap.
-        if (safeBest !== undefined) {
-            best = safeBest;
-        } else if (cappedBest !== undefined) {
-            best = cappedBest;
-        }
+        best = this.pickRanked(safeTier, spread)
+            ?? this.pickRanked(cappedTier, spread)
+            ?? this.pickRanked(leapTier, spread);
         if (best !== undefined) {
             this.log(`foot target: ${best.index} (y=${best.posY.toFixed(0)}, relaxed=${relaxed})`);
         } else {
@@ -969,11 +1029,13 @@ export class Climber {
         // nothing closer fits.
         const staticReach = armLen * (relaxed ? REACH_FRACTION_RELAXED : REACH_FRACTION);
         let best: WallAnchor | undefined;
-        let bestY = Number.POSITIVE_INFINITY;
-        // Highest candidate beyond the static reach (margin-dependent) -
-        // fallback only.
-        let stretchBest: WallAnchor | undefined;
-        let stretchBestY = Number.POSITIVE_INFINITY;
+        // Tier 1: within the static arm (highest first). Tier 2 (fallback):
+        // beyond the static reach, inside the swing margin. The final pick
+        // is a rank-weighted RANDOM draw (same scheme as the foot pick):
+        // deterministic across runs, varied across cycles - a stuck hand
+        // loop re-choosing the same marginal anchor gets a different one.
+        const staticTier: WallAnchor[] = [];
+        const stretchTier: WallAnchor[] = [];
         for (const anchor of this.wall.wallAnchors) {
             if (occupied.has(anchor.index) || this.motor.isBlacklisted(anchor.index)) continue;
             if (this.releasedThisCycle.has(anchor.index)) continue;
@@ -984,17 +1046,22 @@ export class Climber {
             const distSqr = dx * dx + dy * dy;
             if (distSqr > reach * reach) continue;
             if (distSqr <= staticReach * staticReach) {
-                if (anchor.posY < bestY) {
-                    best = anchor;
-                    bestY = anchor.posY;
-                }
-            } else if (anchor.posY < stretchBestY) {
-                stretchBest = anchor;
-                stretchBestY = anchor.posY;
+                staticTier.push(anchor);
+            } else {
+                stretchTier.push(anchor);
             }
         }
-        if (best === undefined && stretchBest !== undefined) {
-            best = stretchBest;
+        staticTier.sort((a, b) => a.posY - b.posY);
+        stretchTier.sort((a, b) => a.posY - b.posY);
+        // The stall ladder flattens the draw (near-uniform): alternating
+        // between sibling anchors changes the body's swing, which is often
+        // enough to unstick a compressed pose. Normal climbing keeps a
+        // strong greedy bias (see the foot pick).
+        const spread = relaxed ? 0.85 : 0.4;
+        best = this.pickRanked(staticTier, spread) ?? this.pickRanked(stretchTier, spread);
+        if (
+            best === undefined && stretchTier.length > 0
+        ) {
             this.log(`hand pick: only beyond-static-arm candidates -> using swing margin`);
         }
         if (best !== undefined) {
