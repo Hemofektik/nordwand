@@ -42,6 +42,29 @@ const MIN_PUSH = 0.5;
  *  and makes the push phase far harder than it needs to be. */
 const FOOT_LEAP_MAX_RISE = 15;
 
+/** Recovery chains (user directive): it must always be possible to do
+ *  MULTIPLE leg or hand moves in a row - without switching to the other
+ *  limb - to shorten the distance between the latched leg anchors and the
+ *  latched hand anchors, so that normal movements become possible again.
+ *
+ *  - OVERSTRETCHED (hand-foot gap >= OVERSTRETCH_GAP): the hands cannot
+ *    reach any new anchor (the skeleton is too stretched) and neither the
+ *    push (legs extended) nor the haul (rigid bridge) can help. The escape
+ *    is a chain of consecutive LegReach moves that walk the feet UP toward
+ *    the hands.
+ *  - COMPRESSED (gap <= COMPRESSED_GAP): the feet are jammed against the
+ *    feet-below-hands gap limit and no foot candidate exists. The mirror
+ *    escape is a chain of consecutive HandReach moves that walk the hands
+ *    back DOWN toward the feet (the relaxed floor lets a hand latch slightly
+ *    below its own anchor).
+ *  Each chain move is a full phase with the normal timeout/ladder guards;
+ *  the chain length is bounded and the counters reset on any latch of the
+ *  other limb kind or on substitution/Idle. */
+const OVERSTRETCH_GAP = 35;
+const COMPRESSED_GAP = 18;
+const FOOT_RECOVERY_MOVES = 3;
+const HAND_RECOVERY_MOVES = 2;
+
 export class Climber {
     public readonly phys: SpringPhysics;
     public readonly wall: Wall;
@@ -82,6 +105,13 @@ export class Climber {
      *  pinned on a94 for the whole window). Resuming the interrupted phase
      *  gives the leg move a clear window right after the haul. */
     private leanOutResumePhase: "LegReach" | "HandReach" | undefined;
+    /** Remaining consecutive recovery moves (see the recovery-chain
+     *  constants). A foot chain walks the feet up toward the hands when the
+     *  body is overstretched; a hand chain walks the hands down toward the
+     *  feet when it is compressed. Cleared on any latch of the other limb
+     *  kind, on substitution entry, and on Idle. */
+    private footRecoveryRemaining = 0;
+    private handRecoveryRemaining = 0;
     /** Side the HandReach move reaches with (captured once per move). */
     private handReachSide = -1;
     public clock = 0;
@@ -148,6 +178,41 @@ export class Climber {
 
         if (this.phase === "Idle") {
             this.beginInitialPhase();
+        }
+
+        // RECOVERY CHAINS (user directive): when the latched hand-foot gap
+        // leaves the workable band, run consecutive same-limb moves to
+        // shorten the gap BEFORE returning to the normal rotation. The
+        // normal rotation forces a HandReach after every foot latch (and
+        // vice versa), which is exactly what CANNOT fix a stretched or
+        // compressed skeleton - the feet (or hands) never get two moves in
+        // a row. The chain is bounded (FOOT/HAND_RECOVERY_MOVES) and every
+        // move runs with the normal timeout/ladder guards.
+        if (
+            (this.phase === "LegReach" || this.phase === "HandReach") &&
+            this.footRecoveryRemaining === 0 && this.handRecoveryRemaining === 0
+        ) {
+            const gap = this.latchedHandFootGap();
+            // NOTE: gap can be NEGATIVE (feet latched above hands - a legal
+            // mantle pose). That is NOT the compressed case: only a gap in
+            // [0, COMPRESSED_GAP] means the feet hang just below the hands
+            // with no room to work.
+            if (gap >= OVERSTRETCH_GAP) {
+                this.footRecoveryRemaining = FOOT_RECOVERY_MOVES;
+                this.log(`recovery: hand-foot gap ${gap.toFixed(0)}px >= ${OVERSTRETCH_GAP} (overstretched) -> ${FOOT_RECOVERY_MOVES} consecutive leg moves`);
+            } else if (gap >= 0 && gap <= COMPRESSED_GAP) {
+                this.handRecoveryRemaining = HAND_RECOVERY_MOVES;
+                this.log(`recovery: hand-foot gap ${gap.toFixed(0)}px <= ${COMPRESSED_GAP} (compressed) -> ${HAND_RECOVERY_MOVES} consecutive hand moves`);
+            }
+        }
+        if (this.footRecoveryRemaining > 0 && this.phase !== "LegReach" && this.phase !== "Push") {
+            // A foot chain move ended (latch -> Push, or the phase was
+            // interrupted): route back into LegReach while moves remain.
+            this.log(`recovery: ${this.footRecoveryRemaining} leg moves left -> LegReach`);
+            this.beginPhase("LegReach");
+        } else if (this.handRecoveryRemaining > 0 && this.phase !== "HandReach") {
+            this.log(`recovery: ${this.handRecoveryRemaining} hand moves left -> HandReach`);
+            this.beginPhase("HandReach");
         }
 
         switch (this.phase) {
@@ -270,6 +335,8 @@ export class Climber {
         this.ladderStep = 0;
         this.substitutionCount = 0;
         this.pendingSubstitution = undefined;
+        this.footRecoveryRemaining = 0;
+        this.handRecoveryRemaining = 0;
         this.target = undefined;
     }
 
@@ -283,6 +350,28 @@ export class Climber {
             if (this.skeleton.isGrabbing(kind, side)) count++;
         }
         return count;
+    }
+
+    /** Vertical gap between the HIGHEST latched foot anchor and the LOWEST
+     *  latched hand anchor (larger = more stretched). POSITIVE_INFINITY when
+     *  either kind has nothing latched (the caller guards that case). */
+    private latchedHandFootGap(): number {
+        let highestFootY = Number.POSITIVE_INFINITY;
+        for (let side = 0; side < 2; side++) {
+            if (!this.skeleton.isGrabbing("foot", side)) continue;
+            const a = this.wall.wallAnchors[this.skeleton.grabConstraint("foot", side).wallAnchorIndex];
+            if (a !== undefined) highestFootY = Math.min(highestFootY, a.posY);
+        }
+        let lowestHandY = Number.NEGATIVE_INFINITY;
+        for (let side = 0; side < 2; side++) {
+            if (!this.skeleton.isGrabbing("hand", side)) continue;
+            const a = this.wall.wallAnchors[this.skeleton.grabConstraint("hand", side).wallAnchorIndex];
+            if (a !== undefined) lowestHandY = Math.max(lowestHandY, a.posY);
+        }
+        if (highestFootY === Number.POSITIVE_INFINITY || lowestHandY === Number.NEGATIVE_INFINITY) {
+            return Number.POSITIVE_INFINITY;
+        }
+        return lowestHandY - highestFootY;
     }
 
     private beginInitialPhase(): void {
@@ -444,6 +533,10 @@ export class Climber {
             // The foot is holding a fresh anchor: clear the stale released
             // reference so a later regrab/floor uses the CURRENT hold.
             this.footReleasedAnchor[freeSide] = -1;
+            // Recovery chain bookkeeping: a foot latch consumed one chain
+            // move; a HAND latch ends any foot chain (the gap problem the
+            // chain was solving has changed).
+            if (this.footRecoveryRemaining > 0) this.footRecoveryRemaining--;
             // NOTE: the old drive leg does NOT release here - it releases at
             // the start of Push (see updatePush), so that during HandReach
             // only the reaching hand is ever free (≤1-free invariant, §9.2).
@@ -621,6 +714,9 @@ export class Climber {
             // The hand is holding a fresh anchor: clear the stale released
             // reference so a later regrab/floor uses the CURRENT hold.
             this.handReleasedAnchor[reachSide] = -1;
+            // Recovery chain bookkeeping: a hand latch consumed one chain
+            // move; a FOOT latch ends any hand chain.
+            if (this.handRecoveryRemaining > 0) this.handRecoveryRemaining--;
             this.supportArmSide = reachSide;
             this.log(`HandReach: hand latched anchor ${this.target.index}`);
             this.beginPhase("LegReach");
@@ -676,6 +772,11 @@ export class Climber {
     private enterSubstitution(failedMove: "leg" | "hand"): void {
         // A limb freed for a move that now substitutes must be re-latched
         // first: the ≤1-free invariant (§9.2) outranks the substitution.
+        // A recovery chain is also abandoned: a failed pick inside a chain
+        // means the chain's premise (candidates exist for this limb) is
+        // false - the substitution ladder takes over.
+        this.footRecoveryRemaining = 0;
+        this.handRecoveryRemaining = 0;
         if (failedMove === "hand") {
             for (let side = 0; side < 2; side++) {
                 this.regrabFreeHand(side);
