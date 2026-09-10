@@ -157,6 +157,7 @@ export class Game {
 
         this.phys = new SpringPhysics();
         this.wall = new Wall(posX, posY, wallSeed);
+        this.phys.wall = this.wall;
         this.player = new Player(this.phys, this.wall, posX, posY, this.gameState);
 
         this.won = false;

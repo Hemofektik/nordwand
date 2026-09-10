@@ -1,6 +1,7 @@
 // TODO: put computations in web worker
 
 import { GetAngleBetweenVertices } from "./MathUtils.ts";
+import type { Wall } from "./Wall.ts";
 
 export class PhysicalParticleState {
     public posX = 0;
@@ -227,6 +228,11 @@ export class SpringPhysics {
 
     public time = 0.0;
     public timeAccumulator = 0.0;
+    public wall: Wall | undefined;
+    /** Per-particle wall collision participation. Limb particles (hands,
+     *  feet, elbows, knees) are excluded - only the body collides with the
+     *  wall. Defaults to true; set false for limbs. */
+    private readonly wallCollides: boolean[] = [];
 
     public update(deltaTime: number): boolean {
         return this.updatePhysicsConstantTimeStep(deltaTime);
@@ -239,8 +245,16 @@ export class SpringPhysics {
         pps.posY = posY;
 
         this.particleStates.push(pps);
+        this.wallCollides.push(true);
 
         return this.particleStates.length - 1;
+    }
+
+    /** Enables/disables wall collision for a particle. Limb particles should
+     *  not collide with the wall so the climbing IK can move them freely
+     *  along the surface. */
+    public setWallCollision(particleIndex: number, collides: boolean): void {
+        this.wallCollides[particleIndex] = collides;
     }
 
     public createDistanceConstraint(particleIndex0: number, particleIndex1: number): number {
@@ -363,6 +377,17 @@ export class SpringPhysics {
         for (const state of this.particleStates) {
             state.posX += deltaTime * state.velX;
             state.posY += deltaTime * state.velY;
+        }
+
+        // Wall collision: body particles are pushed out of the rock. Limb
+        // particles (excluded via setWallCollision) pass through.
+        if (this.wall !== undefined) {
+            for (let n = 0; n < this.particleStates.length; n++) {
+                if (this.wallCollides[n] !== true) {
+                    continue;
+                }
+                this.wall.collideParticle(this.particleStates[n]!);
+            }
         }
 
         if (this.time < 1.0) {

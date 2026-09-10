@@ -208,6 +208,14 @@ export class Skeleton {
         const rightankleIndex = createBodyParticle(phys, posX + this.leglength * 0.5, buttocksPosY + this.leglength * 0.5, bodyParticleMass * 0.5);
         this.footParticleIndex.push(rightankleIndex);
 
+        // Limb particles do not collide with the wall (user directive): the
+        // climbing IK must be able to move hands/feet freely along the
+        // surface. Only the body (pelvis, buttocks, back, neck, head)
+        // collides with the rock.
+        for (const limbIndex of [leftelbowIndex, leftwristIndex, leftkneeIndex, leftankleIndex, rightelbowIndex, rightwristIndex, rightkneeIndex, rightankleIndex]) {
+            phys.setWallCollision(limbIndex, false);
+        }
+
         this.bodyConstraintIndices.push(phys.createDistanceConstraint(pelvisIndex, buttocksIndex));
         this.bodyConstraintIndices.push(phys.createDistanceConstraint(pelvisIndex, backIndex));
         this.bodyConstraintIndices.push(phys.createDistanceConstraint(backIndex, neckIndex));

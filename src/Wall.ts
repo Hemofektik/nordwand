@@ -1,5 +1,6 @@
 import type { Camera } from "./Camera.ts";
 import { RandF, SetNoiseIndex } from "./MathUtils.ts";
+import type { PhysicalParticleState } from "./Physics.ts";
 
 export class WallSegment {
     public posX = 0;
@@ -201,6 +202,68 @@ export class Wall {
         }
 
         return result;
+    }
+
+    /** Wall surface x at a given y (linear interpolation between segments),
+     *  or undefined when y is outside the generated wall. The wall face
+     *  points -x: the rock is on the +x side of the surface. */
+    public wallXAtY(posY: number): number | undefined {
+        const first = this.wallSegments[0];
+        const last = this.wallSegments[this.wallSegments.length - 1];
+        if (first === undefined || last === undefined || this.wallSegments.length < 2) {
+            return undefined;
+        }
+        if (posY > first.posY || posY < last.posY) {
+            return undefined;
+        }
+
+        // Segments are ordered top (small index) to bottom (large index) in y.
+        let lo = 0;
+        let hi = this.wallSegments.length - 2;
+        while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+            const ws0 = this.wallSegments[mid];
+            const ws1 = this.wallSegments[mid + 1];
+            if (ws0 === undefined || ws1 === undefined) {
+                return undefined;
+            }
+
+            if (posY > ws0.posY) {
+                hi = mid - 1;
+                continue;
+            }
+            if (posY < ws1.posY) {
+                lo = mid + 1;
+                continue;
+            }
+
+            const deltaY = ws1.posY - ws0.posY;
+            const t = Math.abs(deltaY) < 0.0001 ? 0 : (posY - ws0.posY) / deltaY;
+            return ws0.posX + t * (ws1.posX - ws0.posX);
+        }
+
+        return undefined;
+    }
+
+    /** Pushes a particle out of the rock (to the -x side of the surface).
+     *  Returns true when the particle was moved. */
+    public collideParticle(state: PhysicalParticleState, skin = 1): boolean {
+        const wallX = this.wallXAtY(state.posY);
+        if (wallX === undefined) {
+            return false;
+        }
+
+        const surfaceX = wallX - skin;
+        if (state.posX <= surfaceX) {
+            return false;
+        }
+
+        state.posX = surfaceX;
+        if (state.velX > 0) {
+            state.velX = 0;
+        }
+        state.velY *= 0.85;
+        return true;
     }
 
     public constructor(posX: number, posY: number, wallSeed: number) {
