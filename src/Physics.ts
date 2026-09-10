@@ -302,20 +302,25 @@ export class SpringPhysics {
     }
 
     public updatePhysicsConstantTimeStep(deltaTime: number): boolean {
-        const physicsIsReady = false;
         const constantTimeStep = 0.004; // 250 Hz update Frequency
         /// Update at constant time interval.
 
         deltaTime = Math.min(deltaTime, 0.1); // avoid feedback slowdown
         this.time += deltaTime;
         this.timeAccumulator += deltaTime;
-        let ready = physicsIsReady;
+        let ready = 0;
         while (this.timeAccumulator >= constantTimeStep) {
-            ready = ready || this.updatePhysics(constantTimeStep);
+            // NOTE: bitwise-exact legacy semantics - |= does NOT short-circuit,
+            // so UpdatePhysics runs on EVERY substep. A logical || here skips
+            // the call once ready is true, dropping the simulation from ~250
+            // steps/s to ~60 (1 per frame) as soon as the 1s settle gate
+            // passes - the visible "slow motion" physics (rope crawl, slow
+            // fall acceleration).
+            ready |= this.updatePhysics(constantTimeStep) ? 1 : 0;
             this.timeAccumulator -= constantTimeStep;
         }
 
-        return ready;
+        return ready !== 0;
     }
 
     /// Update physics state.

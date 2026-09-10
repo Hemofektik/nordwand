@@ -7,7 +7,14 @@ export function Rand(): number {
     GNoiseIndex++;
 
     const masked = ((x << 13) ^ x) & 0xffffffff; // simple noise
-    return (masked * (((masked * masked * 15731 + 789221) & 0xffffffff) + 1376312589)) | 0;
+    // Bitwise-exact legacy formula. Operator placement matters: the +789221
+    // happens BEFORE the 32-bit mask, and the +1376312589 sits OUTSIDE the
+    // product - the double overflows to a negative value, and ToInt32 (via
+    // RandF's & 0x7fffffff) on that negative is what the legacy consumed.
+    // Parenthesizing +1376312589 INSIDE the product (or | 0-ing the result)
+    // changes the entire sequence (verified against the legacy bundle:
+    // seed 12345 -> 0.910335, seed 0 -> 0.640895).
+    return (masked * ((masked * masked * 15731 + 789221) & 0xffffffff) + 1376312589);
 }
 
 export function RandF(): number {
