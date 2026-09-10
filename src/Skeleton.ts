@@ -1,17 +1,28 @@
 import type { Camera } from "./Camera.ts";
-import type { FixedConstraint, PhysicalParticleState, SpringPhysics } from "./Physics.ts";
-import type { Wall, WallAnchor } from "./Wall.ts";
-import { defined } from "./assert.ts";
+import type { SpringPhysics } from "./Physics.ts";
+import type { Wall } from "./Wall.ts";
 
-function drawDebugLine(
-    ctx: CanvasRenderingContext2D,
-    cam: Camera,
-    x0: number,
-    y0: number,
-    x1: number,
-    y1: number,
-    color: string,
+function updateDistanceConstraintBasedOnTargetAngle(
+    phys: SpringPhysics,
+    distanceConstraintIndex: number,
+    angularConstraintIndex: number,
+    dcLeftIndex: number,
+    dcRightIndex: number,
 ): void {
+    const dc = phys.distanceConstraints[distanceConstraintIndex]!;
+    const ac = phys.angularConstraints[angularConstraintIndex]!;
+    const dcLeft = phys.distanceConstraints[dcLeftIndex]!;
+    const dcRight = phys.distanceConstraints[dcRightIndex]!;
+
+    // see http://de.wikipedia.org/wiki/Formelsammlung_Trigonometrie#Kosinussatz for more details
+    const gamma = ac.targetAngle;
+    const a = dcLeft.distance;
+    const b = dcRight.distance;
+    const newDistance = Math.sqrt(a * a + b * b - 2 * a * b * Math.cos(gamma));
+    dc.distance = newDistance;
+}
+
+function drawDebugLine(ctx: CanvasRenderingContext2D, cam: Camera, x0: number, y0: number, x1: number, y1: number, color: string): void {
     const screenPosX0 = Math.round(cam.world_to_viewport_x_pixel(x0) / cam.pixelScale) * cam.pixelScale;
     const screenPosY0 = Math.round(cam.world_to_viewport_y_pixel(y0) / cam.pixelScale) * cam.pixelScale;
     const screenPosX1 = Math.round(cam.world_to_viewport_x_pixel(x1) / cam.pixelScale) * cam.pixelScale;
@@ -29,48 +40,35 @@ function drawDistanceConstraints(
     ctx: CanvasRenderingContext2D,
     cam: Camera,
     phys: SpringPhysics,
-    distanceConstraintIndices: readonly number[],
+    distanceConstraintIndices: number[],
     color: string,
 ): void {
-    for (const constraintIndex of distanceConstraintIndices) {
-        if (constraintIndex >= phys.distanceConstraints.length) {
-            continue;
-        }
+    for (const index of distanceConstraintIndices) {
+        // TODO: this is not sufficient to guard broken constraints -> add callback instead to notify anyone about broken constraints
+        if (index < phys.distanceConstraints.length) {
+            const c = phys.distanceConstraints[index]!;
 
-        const c = phys.distanceConstraints[constraintIndex];
-        if (c === undefined) {
-            continue;
-        }
+            const state0 = phys.particleStates[c.particleIndex0]!;
+            const state1 = phys.particleStates[c.particleIndex1]!;
 
-        const state0 = phys.particleStates[c.particleIndex0];
-        const state1 = phys.particleStates[c.particleIndex1];
-        if (state0 === undefined || state1 === undefined) {
-            continue;
+            drawDebugLine(ctx, cam, state0.posX, state0.posY, state1.posX, state1.posY, color);
         }
-
-        drawDebugLine(ctx, cam, state0.posX, state0.posY, state1.posX, state1.posY, color);
     }
 }
 
 function createBodyParticle(phys: SpringPhysics, posX: number, posY: number, mass: number): number {
     const particleIndex = phys.createParticle(posX, posY);
-    const particle = defined(phys.particleStates[particleIndex], "Created particle is missing");
-    particle.mass = mass;
-    particle.inverseMass = 1.0 / mass;
-    return particleIndex;
-}
 
-function createLimbParticle(phys: SpringPhysics, posX: number, posY: number, mass: number): number {
-    const particleIndex = createBodyParticle(phys, posX, posY, mass);
-    // Limb particles pass through the wall: collision would fight the
-    // climbing IK and make reaching anchors unnecessarily difficult.
-    phys.setWallCollision(particleIndex, false);
+    phys.particleStates[particleIndex]!.mass = mass;
+    phys.particleStates[particleIndex]!.inverseMass = 1.0 / mass;
+
     return particleIndex;
 }
 
 export class Skeleton {
-    public phys: SpringPhysics;
-    public wall: Wall;
+    public phys: SpringPhysics = undefined as unknown as SpringPhysics;
+    public wall: Wall = undefined as unknown as Wall;
+
     public time = 0;
 
     public bodylength = 24;
@@ -83,35 +81,58 @@ export class Skeleton {
     public rightArmConstraintIndices: number[] = [];
     public rightLegConstraintIndices: number[] = [];
 
-    public pelvisParticleIndex = -1;
-    public buttocksParticleIndex = -1;
-    public neckParticleIndex = -1;
-    /** Index of the back particle (between pelvis and neck); part of the
-     *  CoM proxy (concept/climbing-plan.md §7.4). */
-    public backParticleIndex = -1;
+    public leftArmHelperConstraintIndices: number[] = [];
+    public rightArmHelperConstraintIndices: number[] = [];
+    public leftLegHelperConstraintIndices: number[] = [];
+    public rightLegHelperConstraintIndices: number[] = [];
 
+    public pelvisParticleIndex = -1; // rope is attached here
+    public buttocksParticleIndex = -1; // feet are attached here
+    public backParticleIndex = -1; // nothing attached to
+    public neckParticleIndex = -1; // arms are attached here
+
+    // each of the following arrays has two elements (0 = left; 1 = right)
     public handParticleIndex: number[] = [];
     public footParticleIndex: number[] = [];
-    public shoulderACIndex: number[] = [];
+    public shoulderACIndex: number[] = []; // AC == AngularConstraint
     public elbowACIndex: number[] = [];
     public hipJointACIndex: number[] = [];
     public kneeJointACIndex: number[] = [];
-    public backACIndex: number[] = [];
 
     public handGrabConstraintIndex: number[] = [];
     public footGrabConstraintIndex: number[] = [];
 
+    public backACIndex: number[] = []; // three AC indices
+
     public constructor(phys: SpringPhysics, wall: Wall, posX: number, posY: number) {
-        this.phys = phys;
-        this.wall = wall;
-        this.initialize(posX, posY);
+        this.initialize(phys, wall, posX, posY);
     }
 
     public update(deltaTime: number): void {
+        updateDistanceConstraintBasedOnTargetAngle(this.phys, this.leftArmHelperConstraintIndices[0]!, this.shoulderACIndex[0]!, this.bodyConstraintIndices[2]!, this.leftArmConstraintIndices[0]!);
+        updateDistanceConstraintBasedOnTargetAngle(this.phys, this.leftArmHelperConstraintIndices[1]!, this.elbowACIndex[0]!, this.leftArmConstraintIndices[0]!, this.leftArmConstraintIndices[1]!);
+
+        updateDistanceConstraintBasedOnTargetAngle(this.phys, this.rightArmHelperConstraintIndices[0]!, this.shoulderACIndex[1]!, this.bodyConstraintIndices[2]!, this.rightArmConstraintIndices[0]!);
+        updateDistanceConstraintBasedOnTargetAngle(this.phys, this.rightArmHelperConstraintIndices[1]!, this.elbowACIndex[1]!, this.rightArmConstraintIndices[0]!, this.rightArmConstraintIndices[1]!);
+
+        updateDistanceConstraintBasedOnTargetAngle(this.phys, this.leftLegHelperConstraintIndices[0]!, this.hipJointACIndex[0]!, this.bodyConstraintIndices[1]!, this.leftLegConstraintIndices[0]!);
+        updateDistanceConstraintBasedOnTargetAngle(this.phys, this.leftLegHelperConstraintIndices[1]!, this.kneeJointACIndex[0]!, this.leftLegConstraintIndices[0]!, this.leftLegConstraintIndices[1]!);
+
+        updateDistanceConstraintBasedOnTargetAngle(this.phys, this.rightLegHelperConstraintIndices[0]!, this.hipJointACIndex[1]!, this.bodyConstraintIndices[1]!, this.rightLegConstraintIndices[0]!);
+        updateDistanceConstraintBasedOnTargetAngle(this.phys, this.rightLegHelperConstraintIndices[1]!, this.kneeJointACIndex[1]!, this.rightLegConstraintIndices[0]!, this.rightLegConstraintIndices[1]!);
+
         this.time += deltaTime;
     }
 
     public draw(ctx: CanvasRenderingContext2D, cam: Camera): void {
+        // Debug output to visualize the skeleton
+        /*ctx.globalAlpha = 0.2;
+        drawDistanceConstraints(ctx, cam, this.phys, this.leftArmHelperConstraintIndices, "#000000");
+        drawDistanceConstraints(ctx, cam, this.phys, this.rightArmHelperConstraintIndices, "#000000");
+        drawDistanceConstraints(ctx, cam, this.phys, this.leftLegHelperConstraintIndices, "#000000");
+        drawDistanceConstraints(ctx, cam, this.phys, this.rightLegHelperConstraintIndices, "#000000");
+        ctx.globalAlpha = 1.0;*/
+
         drawDistanceConstraints(ctx, cam, this.phys, this.bodyConstraintIndices, "#AA6000");
         drawDistanceConstraints(ctx, cam, this.phys, this.leftArmConstraintIndices, "#000080");
         drawDistanceConstraints(ctx, cam, this.phys, this.leftLegConstraintIndices, "#00AA00");
@@ -119,347 +140,143 @@ export class Skeleton {
         drawDistanceConstraints(ctx, cam, this.phys, this.rightLegConstraintIndices, "#00FF00");
     }
 
+    public addBowOffset(offset: number): void {
+        this.phys.angularConstraints[this.hipJointACIndex[0]!]!.targetAngle -= offset;
+        this.phys.angularConstraints[this.hipJointACIndex[1]!]!.targetAngle -= offset;
+
+        this.phys.angularConstraints[this.shoulderACIndex[0]!]!.targetAngle += offset;
+        this.phys.angularConstraints[this.shoulderACIndex[1]!]!.targetAngle += offset;
+    }
+
     public letGo(): void {
-        this.release("hand", 0);
-        this.release("hand", 1);
-        this.release("foot", 0);
-        this.release("foot", 1);
+        this.phys.fixedConstraints[this.handGrabConstraintIndex[0]!]!.isEnabled = false;
+        this.phys.fixedConstraints[this.handGrabConstraintIndex[1]!]!.isEnabled = false;
+        this.phys.fixedConstraints[this.footGrabConstraintIndex[0]!]!.isEnabled = false;
+        this.phys.fixedConstraints[this.footGrabConstraintIndex[1]!]!.isEnabled = false;
     }
 
-    public isGrabbing(kind: "hand" | "foot", sideIndex: number): boolean {
-        return this.grabConstraint(kind, sideIndex).isEnabled;
+    public getPosition(): { posX: number; posY: number } {
+        return {
+            posX: this.phys.particleStates[this.pelvisParticleIndex]!.posX,
+            posY: this.phys.particleStates[this.pelvisParticleIndex]!.posY,
+        };
     }
 
-    public findFreeSide(kind: "hand" | "foot"): number {
-        for (let side = 0; side < 2; side++) {
-            if (!this.isGrabbing(kind, side)) {
-                return side;
-            }
-        }
-        return -1;
-    }
+    private initialize(phys: SpringPhysics, wall: Wall, posX: number, posY: number): void {
+        this.phys = phys;
+        this.wall = wall;
 
-    public grab(kind: "hand" | "foot", sideIndex: number, anchor: WallAnchor): void {
-        const constraint = this.grabConstraint(kind, sideIndex);
-        constraint.posX = anchor.posX;
-        constraint.posY = anchor.posY;
-        constraint.wallAnchorIndex = anchor.index;
-        constraint.isEnabled = true;
-
-        const particle = this.limbParticle(kind, sideIndex);
-        particle.posX = anchor.posX;
-        particle.posY = anchor.posY;
-        particle.velX = 0;
-        particle.velY = 0;
-    }
-
-    public release(kind: "hand" | "foot", sideIndex: number): void {
-        this.grabConstraint(kind, sideIndex).isEnabled = false;
-    }
-
-    public grabConstraint(kind: "hand" | "foot", sideIndex: number): FixedConstraint {
-        const indices = kind === "hand" ? this.handGrabConstraintIndex : this.footGrabConstraintIndex;
-        const constraintIndex = defined(indices[sideIndex], `Missing ${kind} grab`);
-        return defined(this.phys.fixedConstraints[constraintIndex], `Missing ${kind} grab constraint`);
-    }
-
-    public limbParticle(kind: "hand" | "foot", sideIndex: number): PhysicalParticleState {
-        const indices = kind === "hand" ? this.handParticleIndex : this.footParticleIndex;
-        const particleIndex = defined(indices[sideIndex], `Missing ${kind} particle`);
-        return defined(this.phys.particleStates[particleIndex], `Missing ${kind} particle state`);
-    }
-
-    /** Nearest anchor strictly above a given y (smaller y = higher). */
-    private nearestAnchorAbove(posX: number, posY: number, aboveY: number, exclude: Set<number>): number {
-        let best = -1;
-        let bestDistanceSqr = Number.POSITIVE_INFINITY;
-        for (const anchor of this.wall.wallAnchors) {
-            if (exclude.has(anchor.index) || anchor.posY >= aboveY) {
-                continue;
-            }
-            const deltaX = posX - anchor.posX;
-            const deltaY = posY - anchor.posY;
-            const distanceSqr = deltaX * deltaX + deltaY * deltaY;
-            if (distanceSqr < bestDistanceSqr) {
-                bestDistanceSqr = distanceSqr;
-                best = anchor.index;
-            }
-        }
-        return best;
-    }
-
-    /** Nearest anchor strictly below a given y (larger y = lower). */
-    private nearestAnchorBelow(posX: number, posY: number, belowY: number, exclude: Set<number>): number {
-        let best = -1;
-        let bestDistanceSqr = Number.POSITIVE_INFINITY;
-        for (const anchor of this.wall.wallAnchors) {
-            if (exclude.has(anchor.index) || anchor.posY <= belowY) {
-                continue;
-            }
-            const deltaX = posX - anchor.posX;
-            const deltaY = posY - anchor.posY;
-            const distanceSqr = deltaX * deltaX + deltaY * deltaY;
-            if (distanceSqr < bestDistanceSqr) {
-                bestDistanceSqr = distanceSqr;
-                best = anchor.index;
-            }
-        }
-        return best;
-    }
-
-    private initialize(posX: number, posY: number): void {
         const bodyParticleMass = 0.1;
-        const anchors = this.wall.getNearbyAnchors(posX, posY, 300);
-        const firstAnchor = defined(this.wall.wallAnchors[0], "Missing wall anchor for skeleton");
-        const secondAnchor = defined(this.wall.wallAnchors[1], "Missing wall anchor for skeleton");
-        const anchorSpacing = Math.max(
-            0.001,
-            Math.hypot(secondAnchor.posX - firstAnchor.posX, secondAnchor.posY - firstAnchor.posY),
-        );
-        const legAnchorOffset = Math.max(1, Math.round(80 / anchorSpacing));
-        const bodyOffsetY = this.bodylength * 0.7;
-        const bodyTopOffsetY = -this.bodylength * 0.9;
-        const bodyBottomOffsetY = this.bodylength * 0.3 + this.leglength * 0.5;
-        const middleIndex = Math.round(anchors.length / 2);
 
-        let armAnchorIndex = 0;
-        let bestAnchorScore = Number.NEGATIVE_INFINITY;
-        for (let n = 0; n < anchors.length; n++) {
-            const anchor = defined(anchors[n], "Missing nearby wall anchor");
-            const bodyX = anchor.posX - this.armlength * 2.0;
-            let clearance = Number.POSITIVE_INFINITY;
-            for (
-                let sampleY = anchor.posY + bodyTopOffsetY;
-                sampleY <= anchor.posY + bodyOffsetY + bodyBottomOffsetY;
-                sampleY += 4
-            ) {
-                const surfaceX = this.wall.wallXAtY(sampleY);
-                if (surfaceX !== undefined) {
-                    clearance = Math.min(clearance, surfaceX - bodyX);
-                }
-            }
-            const score = clearance - Math.abs(n - middleIndex) * 0.5;
-            if (score > bestAnchorScore) {
-                bestAnchorScore = score;
-                armAnchorIndex = anchor.index;
-            }
-        }
+        const anchors = wall.getNearbyAnchors(posX, posY, 200);
 
-        const legAnchorIndex = Math.max(0, armAnchorIndex - legAnchorOffset);
-        const armAnchor = defined(this.wall.wallAnchors[armAnchorIndex], "Missing arm anchor");
+        posX += 50;
 
-        posX = armAnchor.posX - this.armlength * 2.0;
-        posY = armAnchor.posY + bodyOffsetY;
+        // put skeleton at a position where the left wrist touches the selected anchor
+        const armAnchorIndex = anchors[Math.round(anchors.length / 2)]!.index;
+        const legAnchorIndex = armAnchorIndex - 8;
+        posX = this.wall.wallAnchors[armAnchorIndex]!.posX - this.armlength * 2.0; // x2 to get enough extra distance
+        posY = this.wall.wallAnchors[armAnchorIndex]!.posY + this.bodylength * 0.7;
 
         const buttocksPosY = posY + this.bodylength * 0.3;
         const neckPosY = posY - this.bodylength * 0.7;
 
-        const pelvisIndex = createBodyParticle(this.phys, posX, posY, bodyParticleMass);
-        const buttocksIndex = createBodyParticle(this.phys, posX, buttocksPosY, bodyParticleMass);
-        const backIndex = createBodyParticle(this.phys, posX, posY - this.bodylength * 0.3, bodyParticleMass);
-        const neckIndex = createBodyParticle(this.phys, posX, neckPosY, bodyParticleMass);
-        const headIndex = createBodyParticle(this.phys, posX, posY - this.bodylength * 0.9, bodyParticleMass);
+        const pelvisIndex = createBodyParticle(phys, posX, posY, bodyParticleMass);
+        const buttocksIndex = createBodyParticle(phys, posX, buttocksPosY, bodyParticleMass);
+        const backIndex = createBodyParticle(phys, posX, posY - this.bodylength * 0.3, bodyParticleMass);
+        const neckIndex = createBodyParticle(phys, posX, neckPosY, bodyParticleMass);
+        const headIndex = createBodyParticle(phys, posX, posY - this.bodylength * 0.9, bodyParticleMass);
 
         this.pelvisParticleIndex = pelvisIndex;
         this.buttocksParticleIndex = buttocksIndex;
-        this.neckParticleIndex = neckIndex;
         this.backParticleIndex = backIndex;
+        this.neckParticleIndex = neckIndex;
 
-        const leftelbowIndex = createLimbParticle(this.phys, posX + this.armlength * 0.5, neckPosY, bodyParticleMass * 0.5);
-        const leftwristIndex = createLimbParticle(this.phys, posX + this.armlength * 1.0, neckPosY, bodyParticleMass * 0.5);
+        const leftelbowIndex = createBodyParticle(phys, posX + this.armlength * 0.5, neckPosY, bodyParticleMass * 0.5);
+        const leftwristIndex = createBodyParticle(phys, posX + this.armlength * 1.0, neckPosY, bodyParticleMass * 0.5);
         this.handParticleIndex.push(leftwristIndex);
 
-        const leftkneeIndex = createLimbParticle(this.phys, posX + this.leglength * 0.5, buttocksPosY, bodyParticleMass * 0.5);
-        const leftankleIndex = createLimbParticle(
-            this.phys,
-            posX + this.leglength * 0.5,
-            buttocksPosY + this.leglength * 0.5,
-            bodyParticleMass * 0.5,
-        );
+        const leftkneeIndex = createBodyParticle(phys, posX + this.leglength * 0.5, buttocksPosY, bodyParticleMass * 0.5);
+        const leftankleIndex = createBodyParticle(phys, posX + this.leglength * 0.5, buttocksPosY + this.leglength * 0.5, bodyParticleMass * 0.5);
         this.footParticleIndex.push(leftankleIndex);
 
-        const rightelbowIndex = createLimbParticle(this.phys, posX + this.armlength * 0.5, neckPosY, bodyParticleMass * 0.5);
-        const rightwristIndex = createLimbParticle(this.phys, posX + this.armlength * 1.0, neckPosY, bodyParticleMass * 0.5);
+        const rightelbowIndex = createBodyParticle(phys, posX + this.armlength * 0.5, neckPosY, bodyParticleMass * 0.5);
+        const rightwristIndex = createBodyParticle(phys, posX + this.armlength * 1.0, neckPosY, bodyParticleMass * 0.5);
         this.handParticleIndex.push(rightwristIndex);
 
-        const rightkneeIndex = createLimbParticle(this.phys, posX + this.leglength * 0.5, buttocksPosY, bodyParticleMass * 0.5);
-        const rightankleIndex = createLimbParticle(
-            this.phys,
-            posX + this.leglength * 0.5,
-            buttocksPosY + this.leglength * 0.5,
-            bodyParticleMass * 0.5,
-        );
+        const rightkneeIndex = createBodyParticle(phys, posX + this.leglength * 0.5, buttocksPosY, bodyParticleMass * 0.5);
+        const rightankleIndex = createBodyParticle(phys, posX + this.leglength * 0.5, buttocksPosY + this.leglength * 0.5, bodyParticleMass * 0.5);
         this.footParticleIndex.push(rightankleIndex);
 
-        this.bodyConstraintIndices.push(this.phys.createDistanceConstraint(pelvisIndex, buttocksIndex));
-        this.bodyConstraintIndices.push(this.phys.createDistanceConstraint(pelvisIndex, backIndex));
-        this.bodyConstraintIndices.push(this.phys.createDistanceConstraint(backIndex, neckIndex));
-        this.bodyConstraintIndices.push(this.phys.createDistanceConstraint(neckIndex, headIndex));
+        this.bodyConstraintIndices.push(phys.createDistanceConstraint(pelvisIndex, buttocksIndex));
+        this.bodyConstraintIndices.push(phys.createDistanceConstraint(pelvisIndex, backIndex));
+        this.bodyConstraintIndices.push(phys.createDistanceConstraint(backIndex, neckIndex));
+        this.bodyConstraintIndices.push(phys.createDistanceConstraint(neckIndex, headIndex));
 
-        this.leftArmConstraintIndices.push(this.phys.createDistanceConstraint(neckIndex, leftelbowIndex));
-        this.leftArmConstraintIndices.push(this.phys.createDistanceConstraint(leftelbowIndex, leftwristIndex));
+        this.leftArmConstraintIndices.push(phys.createDistanceConstraint(neckIndex, leftelbowIndex));
+        this.leftArmConstraintIndices.push(phys.createDistanceConstraint(leftelbowIndex, leftwristIndex));
+        this.leftArmHelperConstraintIndices.push(phys.createDistanceConstraint(backIndex, leftelbowIndex));
+        this.leftArmHelperConstraintIndices.push(phys.createDistanceConstraint(neckIndex, leftwristIndex));
 
-        this.leftLegConstraintIndices.push(this.phys.createDistanceConstraint(buttocksIndex, leftkneeIndex));
-        this.leftLegConstraintIndices.push(this.phys.createDistanceConstraint(leftkneeIndex, leftankleIndex));
+        this.leftLegConstraintIndices.push(phys.createDistanceConstraint(buttocksIndex, leftkneeIndex));
+        this.leftLegConstraintIndices.push(phys.createDistanceConstraint(leftkneeIndex, leftankleIndex));
+        this.leftLegHelperConstraintIndices.push(phys.createDistanceConstraint(pelvisIndex, leftkneeIndex));
+        this.leftLegHelperConstraintIndices.push(phys.createDistanceConstraint(buttocksIndex, leftankleIndex));
 
-        this.rightArmConstraintIndices.push(this.phys.createDistanceConstraint(neckIndex, rightelbowIndex));
-        this.rightArmConstraintIndices.push(this.phys.createDistanceConstraint(rightelbowIndex, rightwristIndex));
+        this.rightArmConstraintIndices.push(phys.createDistanceConstraint(neckIndex, rightelbowIndex));
+        this.rightArmConstraintIndices.push(phys.createDistanceConstraint(rightelbowIndex, rightwristIndex));
+        this.rightArmHelperConstraintIndices.push(phys.createDistanceConstraint(backIndex, rightelbowIndex));
+        this.rightArmHelperConstraintIndices.push(phys.createDistanceConstraint(neckIndex, rightwristIndex));
 
-        this.rightLegConstraintIndices.push(this.phys.createDistanceConstraint(buttocksIndex, rightkneeIndex));
-        this.rightLegConstraintIndices.push(this.phys.createDistanceConstraint(rightkneeIndex, rightankleIndex));
+        this.rightLegConstraintIndices.push(phys.createDistanceConstraint(buttocksIndex, rightkneeIndex));
+        this.rightLegConstraintIndices.push(phys.createDistanceConstraint(rightkneeIndex, rightankleIndex));
+        this.rightLegHelperConstraintIndices.push(phys.createDistanceConstraint(pelvisIndex, rightkneeIndex));
+        this.rightLegHelperConstraintIndices.push(phys.createDistanceConstraint(buttocksIndex, rightankleIndex));
 
-        const backAC0 = this.phys.createAngularConstraint(buttocksIndex, pelvisIndex, backIndex);
-        const backAC1 = this.phys.createAngularConstraint(pelvisIndex, backIndex, neckIndex);
-        const backAC2 = this.phys.createAngularConstraint(backIndex, neckIndex, headIndex);
-        this.backACIndex.push(backAC0, backAC1, backAC2);
+        this.backACIndex.push(phys.createAngularConstraint(buttocksIndex, pelvisIndex, backIndex));
+        this.backACIndex.push(phys.createAngularConstraint(pelvisIndex, backIndex, neckIndex));
+        this.backACIndex.push(phys.createAngularConstraint(backIndex, neckIndex, headIndex));
 
-        defined(this.phys.angularConstraints[backAC0], "Missing back angular constraint 0").tightnessFactor = 12.0;
-        defined(this.phys.angularConstraints[backAC1], "Missing back angular constraint 1").tightnessFactor = 10.0;
-        defined(this.phys.angularConstraints[backAC2], "Missing back angular constraint 2").tightnessFactor = 8.0;
+        phys.angularConstraints[this.backACIndex[0]!]!.tightnessFactor = 2.0;
+        phys.angularConstraints[this.backACIndex[1]!]!.tightnessFactor = 2.0;
+        phys.angularConstraints[this.backACIndex[2]!]!.tightnessFactor = 2.0;
 
-        this.shoulderACIndex.push(this.phys.createAngularConstraint(backIndex, neckIndex, leftelbowIndex));
-        this.elbowACIndex.push(this.phys.createAngularConstraint(neckIndex, leftelbowIndex, leftwristIndex));
+        this.shoulderACIndex.push(phys.createAngularConstraint(backIndex, neckIndex, leftelbowIndex));
+        this.elbowACIndex.push(phys.createAngularConstraint(neckIndex, leftelbowIndex, leftwristIndex));
 
-        this.hipJointACIndex.push(this.phys.createAngularConstraint(pelvisIndex, buttocksIndex, leftkneeIndex));
-        this.kneeJointACIndex.push(this.phys.createAngularConstraint(buttocksIndex, leftkneeIndex, leftankleIndex));
+        this.hipJointACIndex.push(phys.createAngularConstraint(pelvisIndex, buttocksIndex, leftkneeIndex));
+        this.kneeJointACIndex.push(phys.createAngularConstraint(buttocksIndex, leftkneeIndex, leftankleIndex));
 
-        this.shoulderACIndex.push(this.phys.createAngularConstraint(backIndex, neckIndex, rightelbowIndex));
-        this.elbowACIndex.push(this.phys.createAngularConstraint(neckIndex, rightelbowIndex, rightwristIndex));
+        this.shoulderACIndex.push(phys.createAngularConstraint(backIndex, neckIndex, rightelbowIndex));
+        this.elbowACIndex.push(phys.createAngularConstraint(neckIndex, rightelbowIndex, rightwristIndex));
 
-        this.hipJointACIndex.push(this.phys.createAngularConstraint(pelvisIndex, buttocksIndex, rightkneeIndex));
-        this.kneeJointACIndex.push(this.phys.createAngularConstraint(buttocksIndex, rightkneeIndex, rightankleIndex));
+        this.hipJointACIndex.push(phys.createAngularConstraint(pelvisIndex, buttocksIndex, rightkneeIndex));
+        this.kneeJointACIndex.push(phys.createAngularConstraint(buttocksIndex, rightkneeIndex, rightankleIndex));
 
-        for (const hipIndex of this.hipJointACIndex) {
-            defined(this.phys.angularConstraints[hipIndex], "Missing hip angular constraint").tightnessFactor = 6.0;
-        }
-        for (const kneeIndex of this.kneeJointACIndex) {
-            defined(this.phys.angularConstraints[kneeIndex], "Missing knee angular constraint").tightnessFactor = 6.0;
-        }
-        for (const shoulderIndex of this.shoulderACIndex) {
-            defined(this.phys.angularConstraints[shoulderIndex], "Missing shoulder angular constraint").tightnessFactor = 5.0;
-        }
-        for (const elbowIndex of this.elbowACIndex) {
-            defined(this.phys.angularConstraints[elbowIndex], "Missing elbow angular constraint").tightnessFactor = 5.0;
-        }
+        const leftHandConstraintAnchorIndex = phys.createFixedConstraint(leftwristIndex);
+        phys.fixedConstraints[leftHandConstraintAnchorIndex]!.posX = this.wall.wallAnchors[armAnchorIndex]!.posX;
+        phys.fixedConstraints[leftHandConstraintAnchorIndex]!.posY = this.wall.wallAnchors[armAnchorIndex]!.posY;
+        phys.particleStates[rightwristIndex]!.posX = this.wall.wallAnchors[armAnchorIndex]!.posX;
+        phys.particleStates[rightwristIndex]!.posY = this.wall.wallAnchors[armAnchorIndex]!.posY;
 
-        const leftHandConstraintAnchorIndex = this.phys.createFixedConstraint(leftwristIndex);
-        const leftHandConstraint = defined(
-            this.phys.fixedConstraints[leftHandConstraintAnchorIndex],
-            "Missing left hand constraint",
-        );
-        const armWallAnchor = defined(this.wall.wallAnchors[armAnchorIndex + 0], "Missing arm wall anchor");
-        leftHandConstraint.posX = armWallAnchor.posX;
-        leftHandConstraint.posY = armWallAnchor.posY;
-
-        const rightankleConstraintAnchorIndex = this.phys.createFixedConstraint(rightankleIndex);
-        const rightAnkleConstraint = defined(
-            this.phys.fixedConstraints[rightankleConstraintAnchorIndex],
-            "Missing right ankle constraint",
-        );
-        const legWallAnchor = defined(this.wall.wallAnchors[legAnchorIndex], "Missing leg wall anchor");
-        rightAnkleConstraint.posX = legWallAnchor.posX;
-        rightAnkleConstraint.posY = legWallAnchor.posY;
+        const rightankleConstraintAnchorIndex = phys.createFixedConstraint(rightankleIndex);
+        phys.fixedConstraints[rightankleConstraintAnchorIndex]!.posX = this.wall.wallAnchors[legAnchorIndex]!.posX;
+        phys.fixedConstraints[rightankleConstraintAnchorIndex]!.posY = this.wall.wallAnchors[legAnchorIndex]!.posY;
+        phys.particleStates[leftankleIndex]!.posX = this.wall.wallAnchors[legAnchorIndex]!.posX;
+        phys.particleStates[leftankleIndex]!.posY = this.wall.wallAnchors[legAnchorIndex]!.posY;
 
         this.handGrabConstraintIndex.push(leftHandConstraintAnchorIndex);
-        this.handGrabConstraintIndex.push(this.phys.createFixedConstraint(rightwristIndex));
+        this.handGrabConstraintIndex.push(phys.createFixedConstraint(rightwristIndex));
 
-        this.footGrabConstraintIndex.push(this.phys.createFixedConstraint(leftankleIndex));
+        this.footGrabConstraintIndex.push(phys.createFixedConstraint(leftankleIndex));
         this.footGrabConstraintIndex.push(rightankleConstraintAnchorIndex);
 
-        // All four limbs start latched (concept/climbing-plan.md §3): the
-        // Climber's cycle begins by releasing a limb itself, and symmetric
-        // starts make the curated-seed hangs reproducible.
-        // Spawn anchors must also satisfy the gap rule (§7.1): every foot
-        // anchor at least 15px below the lowest hand anchor.
-        // Spawn margin: the Climber's gap rule is 15px (FOOT_TO_LOWEST_HAND_GAP);
-        // the spawn uses gap+1 so the settled hang (which can drift ~1px)
-        // still satisfies the invariant.
-        const gap = 16;
+        phys.fixedConstraints[this.handGrabConstraintIndex[0]!]!.isEnabled = true;
+        phys.fixedConstraints[this.handGrabConstraintIndex[1]!]!.isEnabled = false;
+        phys.fixedConstraints[this.footGrabConstraintIndex[0]!]!.isEnabled = false;
+        phys.fixedConstraints[this.footGrabConstraintIndex[1]!]!.isEnabled = true;
 
-        // 1. Left hand at the chosen arm anchor.
-        const leftHandAnchor = defined(this.wall.wallAnchors[armAnchorIndex], "Missing arm anchor");
-
-        // 2. Right hand: nearest anchor to its spawn pose that is at least
-        //    gap px ABOVE the left hand anchor (so feet can fit below both).
-        const rightWrist = defined(this.phys.particleStates[rightwristIndex], "Missing right wrist");
-        const rightHandAnchorIndex = this.nearestAnchorAbove(
-            rightWrist.posX,
-            rightWrist.posY,
-            leftHandAnchor.posY + gap,
-            new Set([armAnchorIndex]),
-        );
-        const rightHandResolvedIndex = rightHandAnchorIndex >= 0
-            ? rightHandAnchorIndex
-            : armAnchorIndex;
-        const rightHandAnchor = defined(
-            this.wall.wallAnchors[rightHandResolvedIndex],
-            "Missing right hand anchor",
-        );
-        // Lowest hand = LARGEST y (lowest position on the wall). The gap rule
-        // measures against the lowest hand, not the highest.
-        const lowestHandY = Math.max(leftHandAnchor.posY, rightHandAnchor.posY);
-        const rightHandConstraint = defined(
-            this.phys.fixedConstraints[defined(this.handGrabConstraintIndex[1], "Missing right hand grab")],
-            "Missing right hand grab constraint",
-        );
-        rightHandConstraint.posX = rightHandAnchor.posX;
-        rightHandConstraint.posY = rightHandAnchor.posY;
-        rightHandConstraint.wallAnchorIndex = rightHandAnchor.index;
-
-        // 3. Right foot: nearest anchor to its spawn pose at least gap px
-        //    below the lowest hand anchor.
-        const rightFootOld = defined(this.wall.wallAnchors[legAnchorIndex], "Missing leg wall anchor");
-        const rightFootResolvedIndex = this.nearestAnchorBelow(
-            rightFootOld.posX,
-            rightFootOld.posY,
-            lowestHandY + gap,
-            new Set<number>(),
-        );
-        const rightFootAnchor = defined(
-            rightFootResolvedIndex >= 0 ? this.wall.wallAnchors[rightFootResolvedIndex] : rightFootOld,
-            "Missing leg wall anchor",
-        );
-
-        // 4. Left foot: nearest anchor to its spawn pose, at least gap px
-        //    below the lowest hand anchor and distinct from the right foot's.
-        const leftAnkle = defined(this.phys.particleStates[leftankleIndex], "Missing left ankle");
-        const leftFootAnchorIndex = this.nearestAnchorBelow(
-            leftAnkle.posX,
-            leftAnkle.posY,
-            lowestHandY + gap,
-            new Set([rightFootAnchor.index]),
-        );
-        const leftFootResolvedIndex = leftFootAnchorIndex >= 0
-            ? leftFootAnchorIndex
-            : rightFootAnchor.index;
-        const leftFootAnchor = defined(
-            this.wall.wallAnchors[leftFootResolvedIndex],
-            "Missing left foot anchor",
-        );
-        const leftFootConstraint = defined(
-            this.phys.fixedConstraints[defined(this.footGrabConstraintIndex[0], "Missing left foot grab")],
-            "Missing left foot grab constraint",
-        );
-        leftFootConstraint.posX = leftFootAnchor.posX;
-        leftFootConstraint.posY = leftFootAnchor.posY;
-        leftFootConstraint.wallAnchorIndex = leftFootAnchor.index;
-
-        defined(this.phys.fixedConstraints[defined(this.handGrabConstraintIndex[0], "Missing left hand grab")], "Missing left hand grab constraint").isEnabled =
-            true;
-        defined(this.phys.fixedConstraints[defined(this.handGrabConstraintIndex[1], "Missing right hand grab")], "Missing right hand grab constraint").isEnabled =
-            true;
-        defined(this.phys.fixedConstraints[defined(this.footGrabConstraintIndex[0], "Missing left foot grab")], "Missing left foot grab constraint").isEnabled =
-            true;
-        defined(this.phys.fixedConstraints[defined(this.footGrabConstraintIndex[1], "Missing right foot grab")], "Missing right foot grab constraint").isEnabled =
-            true;
-
-        defined(this.phys.fixedConstraints[defined(this.handGrabConstraintIndex[0], "Missing left hand grab")], "Missing left hand grab constraint").wallAnchorIndex =
-            leftHandAnchor.index;
-        defined(this.phys.fixedConstraints[defined(this.handGrabConstraintIndex[1], "Missing right hand grab")], "Missing right hand grab constraint").wallAnchorIndex =
-            rightHandAnchor.index;
-        defined(this.phys.fixedConstraints[defined(this.footGrabConstraintIndex[0], "Missing left foot grab")], "Missing left foot grab constraint").wallAnchorIndex =
-            leftFootAnchor.index;
-        defined(this.phys.fixedConstraints[defined(this.footGrabConstraintIndex[1], "Missing right foot grab")], "Missing right foot grab constraint").wallAnchorIndex =
-            rightFootAnchor.index;
+        phys.fixedConstraints[this.handGrabConstraintIndex[0]!]!.wallAnchorIndex = armAnchorIndex;
+        phys.fixedConstraints[this.footGrabConstraintIndex[1]!]!.wallAnchorIndex = legAnchorIndex;
     }
 }

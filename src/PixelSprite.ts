@@ -1,5 +1,4 @@
 import type { Camera } from "./Camera.ts";
-import { defined } from "./assert.ts";
 import { PNGlib } from "./pnglib.ts";
 
 export class Pixel {
@@ -12,7 +11,9 @@ export class Pixel {
 export class PixelSprite {
     public scale = 0.0;
     public image: HTMLImageElement;
+
     public rawPixels: Pixel[][] | null = null;
+
     public sprite: HTMLImageElement | undefined;
 
     public numTilesX = 1;
@@ -43,20 +44,24 @@ export class PixelSprite {
 
         let channelIndex = 0;
         for (let y = 0; y < this.image.naturalHeight; y++) {
-            const row: Pixel[] = [];
-            row.length = this.image.naturalWidth;
+            this.rawPixels[y] = [];
+            this.rawPixels[y]!.length = this.image.naturalWidth;
 
             for (let x = 0; x < this.image.naturalWidth; x++) {
+                const red = pix[channelIndex + 0]!;
+                const green = pix[channelIndex + 1]!;
+                const blue = pix[channelIndex + 2]!;
+                const alpha = pix[channelIndex + 3]!;
+
                 const pixel = new Pixel();
-                pixel.r = pix[channelIndex + 0] ?? 0;
-                pixel.g = pix[channelIndex + 1] ?? 0;
-                pixel.b = pix[channelIndex + 2] ?? 0;
-                pixel.a = pix[channelIndex + 3] ?? 0;
-                row[x] = pixel;
+                pixel.r = red;
+                pixel.g = green;
+                pixel.b = blue;
+                pixel.a = alpha;
+                this.rawPixels[y]![x] = pixel;
+
                 channelIndex += 4;
             }
-
-            this.rawPixels[y] = row;
         }
     }
 
@@ -74,29 +79,28 @@ export class PixelSprite {
         width: number,
         height: number,
     ): void {
-        if (!this.image.complete) {
-            return;
-        }
+        if (!this.image.complete) return;
         if (this.rawPixels === null) {
             this.initialize(ctx);
         }
 
         if (this.scale !== pixelScale) {
+            // adapt size to pixelScale using image.naturalWidth and naturalHeight
             const newWidth = Math.round(this.image.naturalWidth * pixelScale);
             const newHeight = Math.round(this.image.naturalHeight * pixelScale);
-            const img = new Image(newWidth, newHeight);
 
             this.scaledTileWidth = this.tileWidth * pixelScale;
             this.scaledTileHeight = this.tileHeight * pixelScale;
 
+            // constructor takes height, weight and color-depth
             const p = new PNGlib(newWidth, newHeight, 256);
-            p.color(0, 0, 0, 0);
 
-            const rawPixels = defined(this.rawPixels, "Pixel sprite pixels were not initialized");
+            const rawPixels = this.rawPixels!;
             for (let y = 0; y < this.image.naturalHeight; y++) {
-                const row = defined(rawPixels[y], "Missing pixel row");
+                const row = rawPixels[y]!;
                 for (let x = 0; x < this.image.naturalWidth; x++) {
-                    const pixel = defined(row[x], "Missing pixel");
+                    const pixel = row[x]!;
+
                     let newY = Math.round(y * pixelScale);
                     const newYMax = Math.round(newY + pixelScale);
                     for (; newY < newYMax; newY++) {
@@ -109,8 +113,10 @@ export class PixelSprite {
                 }
             }
 
+            const img = new Image(newWidth, newHeight);
             img.src = "data:image/png;base64," + p.getBase64();
             this.sprite = img;
+
             this.scale = pixelScale;
         }
 
@@ -119,7 +125,17 @@ export class PixelSprite {
             return;
         }
 
-        ctx.drawImage(sprite, sourceX, sourceY, width, height, posX, posY, width, height);
+        ctx.drawImage(
+            sprite,
+            sourceX,
+            sourceY,
+            width,
+            height,
+            posX,
+            posY,
+            width,
+            height,
+        );
     }
 
     public drawTiled(

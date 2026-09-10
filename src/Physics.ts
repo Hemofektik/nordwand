@@ -1,37 +1,6 @@
-import {
-    type b2Body,
-    type b2DistanceJoint,
-    b2BodyType,
-    b2CircleShape,
-    b2DistanceJointDef,
-    b2LinearStiffness,
-    b2MassData,
-    b2World,
-} from "@box2d/core";
-import type { Wall } from "./Wall.ts";
+// TODO: put computations in web worker
 
-const PIXELS_TO_METERS = 0.05;
-const METERS_TO_PIXELS = 1 / PIXELS_TO_METERS;
-const GRAVITY_PX = 80;
-const TIME_STEP = 0.002;
-const VELOCITY_ITERATIONS = 16;
-const POSITION_ITERATIONS = 6;
-const DISTANCE_FREQUENCY_HZ = 24;
-const DISTANCE_DAMPING_RATIO = 0.9;
-const PARTICLE_RADIUS_PX = 3;
-const LINEAR_DAMPING = 0.2;
-const BOTTOM_PX = 500;
-const POS_EPSILON_PX = 0.05;
-const VEL_EPSILON_PX = 0.05;
-const ANGULAR_TIGHTNESS = 1600;
-const ANGULAR_DAMPING = 80;
-/** Max per-step angular correction a joint limit may command (radians).
- *  Bounds the impulse when a joint is far outside its window. */
-const LIMIT_MAX_CORRECTION = 0.15;
-
-function clampAbs(value: number, limit: number): number {
-    return Math.min(limit, Math.max(-limit, value));
-}
+import { GetAngleBetweenVertices } from "./MathUtils.ts";
 
 export class PhysicalParticleState {
     public posX = 0;
@@ -41,7 +10,7 @@ export class PhysicalParticleState {
     public velY = 0;
 
     public mass = 0.05;
-    public inverseMass = 20;
+    public inverseMass = 20; //< inverse of the mass used to add force to velocity.
 
     public stress = 0;
 
@@ -71,40 +40,183 @@ export class AngularConstraint {
     public lastAngle = 0;
     public targetAngle = 0;
     public tightnessFactor = 1;
-    /** Hard anatomical limits (radians, [0, 2pi) convention). When set, the
-     *  solver applies a corrective impulse whenever the actual joint angle
-     *  leaves [minAngle, maxAngle] - no target-tracking can push the joint
-     *  past its range. Undefined = unconstrained (e.g. shoulders). */
-    public minAngle: number | undefined = undefined;
-    public maxAngle: number | undefined = undefined;
 }
 
-function wrapAngle0To2Pi(angle: number): number {
-    while (angle > Math.PI * 2) {
-        angle -= Math.PI * 2;
-    }
-    while (angle < 0) {
-        angle += Math.PI * 2;
-    }
-    return angle;
+class ParticleIntermediateState {
+    public state0!: PhysicalParticleState;
+    public state1!: PhysicalParticleState;
+    public targetDistance = 0;
+    public forceX0 = 0;
+    public forceY0 = 0;
+    public forceX1 = 0;
+    public forceY1 = 0;
 }
 
-function wrapAngleNegPiToPi(angle: number): number {
-    while (angle > Math.PI) {
-        angle -= Math.PI * 2;
+function computeForces(piState: ParticleIntermediateState, bottom: number): void {
+    const gravity = 80.0;
+    piState.forceX0 = 0.0;
+    piState.forceY0 = gravity * piState.state0.mass;
+    piState.forceX1 = 0.0;
+    piState.forceY1 = gravity * piState.state1.mass;
+
+    // F = -k(|x|-d)(x/|x|) - bv
+
+    const tightness = 5000.0;
+    const tightness0 = tightness;
+    const tightness1 = tightness;
+    const Damping = 0.1;
+    const AirFriction = 0.01;
+
+    const positionDeltaX = piState.state0.posX - piState.state1.posX;
+    const positionDeltaY = piState.state0.posY - piState.state1.posY;
+    const distance = Math.sqrt(positionDeltaX * positionDeltaX + positionDeltaY * positionDeltaY);
+    // hoisted to function scope: the legacy code (var) also uses them for the
+    // stress accumulation below, where they read 0 when the branch skipped
+    let directionX = 0;
+    let directionY = 0;
+    if (Math.abs(distance) > 0.001) {
+        const invDistance = 1.0 / distance;
+        directionX = positionDeltaX * invDistance;
+        directionY = positionDeltaY * invDistance;
+
+        const dampingX = (piState.state0.velX - piState.state1.velX) * Damping;
+        const dampingY = (piState.state0.velY - piState.state1.velY) * Damping;
+
+        const f0 = (distance - piState.targetDistance) * tightness0;
+        const f1 = (distance - piState.targetDistance) * tightness1;
+
+        piState.forceX0 += f0 * -directionX - dampingX - piState.state0.velX * AirFriction;
+        piState.forceY0 += f0 * -directionY - dampingY - piState.state0.velY * AirFriction;
+        piState.forceX1 += f1 * directionX + dampingX - piState.state1.velX * AirFriction;
+        piState.forceY1 += f1 * directionY + dampingY - piState.state1.velY * AirFriction;
     }
-    while (angle < -Math.PI) {
-        angle += Math.PI * 2;
+
+    if (piState.state0.posY > bottom) {
+        piState.forceY0 += -100;
+        piState.state0.velY = 0;
     }
-    return angle;
+    if (piState.state1.posY > bottom) {
+        piState.forceY1 += -100;
+        piState.state1.velY = 0;
+    }
+
+    piState.state0.stress += piState.forceX0 * -directionX + piState.forceY0 * -directionY;
+    piState.state1.stress += piState.forceX1 * directionX + piState.forceY1 * directionY;
 }
 
-function toMeters(pixels: number): number {
-    return pixels * PIXELS_TO_METERS;
+function midPointIntegrate(piState: ParticleIntermediateState, dt: number, bottom: number): void {
+    /*
+    The main idea behind the midpoint method is that the derivative at the midpoint is a
+    better estimate of the "true" derivative than the derivative at either endpoint.
+
+    Of course you don't have the exact midpoint, so you estimate that too by taking a half-step.
+    Then you compute the derivative at the midpoint and use this to take the full step.
+
+    x_mid = x_n + dt/2 * f(x_n, t_n)
+    t_mid = t_n + dt/2
+
+    x_n+1 = x_n + dt * f(x_mid, t_mid)
+    t_n+1 = t_n + dt
+    */
+
+    const posX0 = piState.state0.posX;
+    const posY0 = piState.state0.posY;
+    const posX1 = piState.state1.posX;
+    const posY1 = piState.state1.posY;
+
+    // half state
+    computeForces(piState, bottom);
+
+    const halfStepDeltaTime = dt * 0.5;
+
+    const forceToDistance0 = piState.state0.inverseMass * halfStepDeltaTime * halfStepDeltaTime;
+    piState.state0.posX += piState.forceX0 * forceToDistance0;
+    piState.state0.posY += piState.forceY0 * forceToDistance0;
+
+    const forceToDistance1 = piState.state1.inverseMass * halfStepDeltaTime * halfStepDeltaTime;
+    piState.state1.posX += piState.forceX1 * forceToDistance1;
+    piState.state1.posY += piState.forceY1 * forceToDistance1;
+
+    piState.state0.stress = 0.0;
+    piState.state1.stress = 0.0;
+
+    // full state based on half step
+    computeForces(piState, bottom);
+
+    piState.state0.posX = posX0;
+    piState.state0.posY = posY0;
+    piState.state1.posX = posX1;
+    piState.state1.posY = posY1;
+
+    const forceFactor0 = piState.state0.inverseMass * dt;
+    piState.state0.velX += piState.forceX0 * forceFactor0;
+    piState.state0.velY += piState.forceY0 * forceFactor0;
+
+    const forceFactor1 = piState.state1.inverseMass * dt;
+    piState.state1.velX += piState.forceX1 * forceFactor1;
+    piState.state1.velY += piState.forceY1 * forceFactor1;
 }
 
-function toPixels(meters: number): number {
-    return meters * METERS_TO_PIXELS;
+function integrateAngularConstraint(angularC: AngularConstraint, particleStates: PhysicalParticleState[], dt: number): void {
+    const tightness = 1000.0;
+    const damping = 100.0;
+
+    const state0 = particleStates[angularC.particleIndex0];
+    const state1 = particleStates[angularC.particleIndex1];
+    const state2 = particleStates[angularC.particleIndex2];
+    if (state0 === undefined || state1 === undefined || state2 === undefined) {
+        return;
+    }
+
+    const dirX0 = state0.posX - state1.posX;
+    const dirY0 = state0.posY - state1.posY;
+    const dirX1 = state2.posX - state0.posX;
+    const dirY1 = state2.posY - state0.posY;
+    const dirX2 = state2.posX - state1.posX;
+    const dirY2 = state2.posY - state1.posY;
+
+    const currentAngle = Math.atan2(dirY0, dirX0) - Math.atan2(dirY2, dirX2);
+    let angleDelta = angularC.targetAngle - currentAngle;
+    while (angleDelta > Math.PI) {
+        angleDelta -= Math.PI * 2;
+    }
+    while (angleDelta < -Math.PI) {
+        angleDelta += Math.PI * 2;
+    }
+
+    const strength = angleDelta * tightness * dt * angularC.tightnessFactor;
+    const invDistance0 = (strength * state0.inverseMass) / Math.sqrt(dirX0 * dirX0 + dirY0 * dirY0);
+    // center vertex has to compensate for both adjacent vertices, thus 2x
+    const invDistance1 = ((strength * state1.inverseMass) / Math.sqrt(dirX1 * dirX1 + dirY1 * dirY1)) * 2.0;
+    const invDistance2 = (strength * state2.inverseMass) / Math.sqrt(dirX2 * dirX2 + dirY2 * dirY2);
+
+    const fDirX0 = -dirY0 * invDistance0;
+    const fDirY0 = dirX0 * invDistance0;
+    const fDirX1 = -dirY1 * invDistance1;
+    const fDirY1 = dirX1 * invDistance1;
+    const fDirX2 = dirY2 * invDistance2;
+    const fDirY2 = -dirX2 * invDistance2;
+
+    let angleSpeed = currentAngle - angularC.lastAngle;
+    while (angleSpeed > Math.PI) {
+        angleSpeed -= Math.PI * 2;
+    }
+    while (angleSpeed < -Math.PI) {
+        angleSpeed += Math.PI * 2;
+    }
+    const speedDamping = Math.min(0.5, Math.pow(angleDelta * angleSpeed > 0 ? Math.abs(angleDelta) * 3 : 0.0, 3) * damping * dt);
+
+    // apply force to velocity
+    {
+        state0.velX += fDirX0 - state0.velX * speedDamping;
+        state0.velY += fDirY0 - state0.velY * speedDamping;
+        state1.velX += fDirX1 - state1.velX * speedDamping;
+        state1.velY += fDirY1 - state1.velY * speedDamping;
+        state2.velX += fDirX2 - state2.velX * speedDamping;
+        state2.velY += fDirY2 - state2.velY * speedDamping;
+    }
+
+    angularC.lastAngle = currentAngle;
 }
 
 export class SpringPhysics {
@@ -115,73 +227,25 @@ export class SpringPhysics {
 
     public time = 0.0;
     public timeAccumulator = 0.0;
-    public wall: Wall | undefined;
 
-    private readonly world: b2World;
-    private readonly bodies: b2Body[] = [];
-    private readonly distanceJoints: b2DistanceJoint[] = [];
-    private readonly pinned: boolean[] = [];
-    private readonly wallCollides: boolean[] = [];
-    private readonly massData = new b2MassData();
-    private readonly particleShape = new b2CircleShape(toMeters(PARTICLE_RADIUS_PX));
-
-    public constructor() {
-        this.world = b2World.Create({ x: 0, y: toMeters(GRAVITY_PX) });
+    public update(deltaTime: number): boolean {
+        return this.updatePhysicsConstantTimeStep(deltaTime);
     }
 
     public createParticle(posX: number, posY: number): number {
         const pps = new PhysicalParticleState();
+
         pps.posX = posX;
         pps.posY = posY;
+
         this.particleStates.push(pps);
 
-        const body = this.world.CreateBody({
-            type: b2BodyType.b2_dynamicBody,
-            position: { x: toMeters(posX), y: toMeters(posY) },
-            fixedRotation: true,
-            linearDamping: LINEAR_DAMPING,
-            allowSleep: false,
-            awake: true,
-            bullet: false,
-        });
-        body.CreateFixture({
-            shape: this.particleShape,
-            density: 1,
-            friction: 0.2,
-            restitution: 0,
-            filter: {
-                categoryBits: 1,
-                maskBits: 0,
-                groupIndex: -1,
-            },
-        });
-        this.applyMass(body, pps.mass);
-        this.bodies.push(body);
-        this.pinned.push(false);
-        this.wallCollides.push(true);
         return this.particleStates.length - 1;
     }
 
-    /**
-     * Enables or disables wall collision for a particle. Limb particles
-     * (hands, feet, elbows, knees) should not collide with the wall so the
-     * climbing IK can move them freely along the surface.
-     */
-    public setWallCollision(particleIndex: number, collides: boolean): void {
-        this.wallCollides[particleIndex] = collides;
-    }
-
     public createDistanceConstraint(particleIndex0: number, particleIndex1: number): number {
-        const particle0 = this.particleStates[particleIndex0];
-        const particle1 = this.particleStates[particleIndex1];
-        const body0 = this.bodies[particleIndex0];
-        const body1 = this.bodies[particleIndex1];
-        if (particle0 === undefined || particle1 === undefined || body0 === undefined || body1 === undefined) {
-            throw new Error("Cannot create distance constraint for missing particles");
-        }
-
-        this.syncMass(particleIndex0);
-        this.syncMass(particleIndex1);
+        const particle0 = this.particleStates[particleIndex0]!;
+        const particle1 = this.particleStates[particleIndex1]!;
 
         const deltaX = particle0.posX - particle1.posX;
         const deltaY = particle0.posY - particle1.posY;
@@ -193,499 +257,114 @@ export class SpringPhysics {
         c.bendFactor = 0.2;
         c.compressionFactor = 0.2;
 
-        const def = new b2DistanceJointDef();
-        def.Initialize(body0, body1, body0.GetPosition(), body1.GetPosition());
-        b2LinearStiffness(def, DISTANCE_FREQUENCY_HZ, DISTANCE_DAMPING_RATIO, body0, body1);
-        const restLength = Math.max(toMeters(c.distance), 0.01);
-        def.length = restLength;
-        def.minLength = restLength * 0.85;
-        def.maxLength = restLength * 1.15;
-
-        this.distanceJoints.push(this.world.CreateJoint(def));
         this.distanceConstraints.push(c);
+
         return this.distanceConstraints.length - 1;
     }
 
     public createFixedConstraint(particleIndex: number): number {
-        const particle = this.particleStates[particleIndex];
-        if (particle === undefined) {
-            throw new Error("Cannot create fixed constraint for missing particle");
-        }
-
         const c = new FixedConstraint();
         c.particleIndex = particleIndex;
+        const particle = this.particleStates[particleIndex]!;
         c.posX = particle.posX;
         c.posY = particle.posY;
         c.isEnabled = true;
         c.wallAnchorIndex = -1;
 
         this.fixedConstraints.push(c);
+
         return this.fixedConstraints.length - 1;
     }
 
-    /**
-     * Destroys a distance constraint: removes its Box2D joint and leaves the
-     * data slot empty (index-based consumers already tolerate holes).
-     */
-    public destroyDistanceConstraint(constraintIndex: number): void {
-        const joint = this.distanceJoints[constraintIndex];
-        if (joint !== undefined) {
-            this.world.DestroyJoint(joint);
-            this.distanceJoints[constraintIndex] = undefined as unknown as b2DistanceJoint;
-        }
-        this.distanceConstraints[constraintIndex] = undefined as unknown as DistanceConstraint;
-    }
-
     public createAngularConstraint(particleIndex0: number, particleIndex1: number, particleIndex2: number): number {
-        const particle0 = this.particleStates[particleIndex0];
-        const particle1 = this.particleStates[particleIndex1];
-        const particle2 = this.particleStates[particleIndex2];
-        if (particle0 === undefined || particle1 === undefined || particle2 === undefined) {
-            throw new Error("Cannot create angular constraint for missing particles");
-        }
-
-        const dirX0 = particle0.posX - particle1.posX;
-        const dirY0 = particle0.posY - particle1.posY;
-        const dirX1 = particle2.posX - particle1.posX;
-        const dirY1 = particle2.posY - particle1.posY;
-
         const c = new AngularConstraint();
         c.particleIndex0 = particleIndex0;
         c.particleIndex1 = particleIndex1;
         c.particleIndex2 = particleIndex2;
-        c.targetAngle = wrapAngle0To2Pi(Math.atan2(dirY0, dirX0) - Math.atan2(dirY1, dirX1));
+        c.targetAngle = GetAngleBetweenVertices(
+            this.particleStates[particleIndex0]!,
+            this.particleStates[particleIndex1]!,
+            this.particleStates[particleIndex2]!,
+        );
         c.lastAngle = c.targetAngle;
         c.tightnessFactor = 1.0;
 
         this.angularConstraints.push(c);
+
         return this.angularConstraints.length - 1;
     }
 
-    public update(deltaTime: number): void {
-        this.updatePhysicsConstantTimeStep(deltaTime);
-    }
-
-    public settle(duration = 8.0): void {
-        const minSteps = Math.ceil(2.0 / TIME_STEP);
-        const maxSteps = Math.ceil(duration / TIME_STEP);
-        const restSpeed = 0.05;
-        const damping = 0.88;
-
-        this.time = Math.max(this.time, 1.0);
-        for (let n = 0; n < maxSteps; n++) {
-            this.updatePhysics(TIME_STEP);
-
-            let maxSpeed = 0;
-            for (const state of this.particleStates) {
-                state.velX *= damping;
-                state.velY *= damping;
-                maxSpeed = Math.max(maxSpeed, Math.hypot(state.velX, state.velY));
-            }
-            this.pushVelocitiesToWorld();
-
-            if (n + 1 >= minSteps && maxSpeed < restSpeed) {
-                break;
-            }
+    public cancelVelocities(): void {
+        for (const state of this.particleStates) {
+            state.velX = 0;
+            state.velY = 0;
         }
-
-        this.time = Math.max(this.time, duration);
-        this.timeAccumulator = 0;
-        this.cancelVelocities();
     }
 
-    public updatePhysicsConstantTimeStep(deltaTime: number): void {
-        deltaTime = Math.min(deltaTime, 0.1);
+    public updatePhysicsConstantTimeStep(deltaTime: number): boolean {
+        const physicsIsReady = false;
+        const constantTimeStep = 0.004; // 250 Hz update Frequency
+        /// Update at constant time interval.
+
+        deltaTime = Math.min(deltaTime, 0.1); // avoid feedback slowdown
         this.time += deltaTime;
         this.timeAccumulator += deltaTime;
-        while (this.timeAccumulator >= TIME_STEP) {
-            this.updatePhysics(TIME_STEP);
-            this.timeAccumulator -= TIME_STEP;
+        let ready = physicsIsReady;
+        while (this.timeAccumulator >= constantTimeStep) {
+            ready = ready || this.updatePhysics(constantTimeStep);
+            this.timeAccumulator -= constantTimeStep;
         }
+
+        return ready;
     }
 
-    public updatePhysics(deltaTime: number): void {
-        this.pushStatesToWorld();
-        this.syncDistanceJoints();
-        this.syncFixedConstraints();
-        this.applyAngularConstraints(deltaTime);
+    /// Update physics state.
+    public updatePhysics(deltaTime: number): boolean {
+        const bottom = 500;
 
-        this.world.Step(deltaTime, {
-            velocityIterations: VELOCITY_ITERATIONS,
-            positionIterations: POSITION_ITERATIONS,
-        });
+        for (const c of this.distanceConstraints) {
+            const piState = new ParticleIntermediateState();
+            piState.state0 = this.particleStates[c.particleIndex0]!;
+            piState.state1 = this.particleStates[c.particleIndex1]!;
+            piState.targetDistance = c.distance;
+            piState.forceX0 = 0.0;
+            piState.forceY0 = 0.0;
+            piState.forceX1 = 0.0;
+            piState.forceY1 = 0.0;
 
-        this.pullStatesFromWorld();
-        this.collideWallAndFloor();
-        this.applyFixedConstraints();
+            midPointIntegrate(piState, deltaTime, bottom);
+
+            /*if (Math.abs(piState.state0.stress) > 10000) {
+                // cut on extreme forces
+                this.distanceConstraints.splice(this.distanceConstraints.indexOf(c), 1);
+            }*/
+        }
+
+        for (const c of this.angularConstraints) {
+            integrateAngularConstraint(c, this.particleStates, deltaTime);
+        }
+
+        for (const c of this.fixedConstraints) {
+            if (c.isEnabled) {
+                const state = this.particleStates[c.particleIndex]!;
+                state.posX = c.posX;
+                state.posY = c.posY;
+
+                state.velX = 0;
+                state.velY = 0;
+            }
+        }
+
+        for (const state of this.particleStates) {
+            state.posX += deltaTime * state.velX;
+            state.posY += deltaTime * state.velY;
+        }
 
         if (this.time < 1.0) {
             this.cancelVelocities();
-        }
-    }
-
-    public applyFixedConstraints(): void {
-        this.syncFixedConstraints();
-        for (const c of this.fixedConstraints) {
-            if (!c.isEnabled) {
-                continue;
-            }
-
-            const state = this.particleStates[c.particleIndex];
-            const body = this.bodies[c.particleIndex];
-            if (state === undefined || body === undefined) {
-                continue;
-            }
-
-            state.posX = c.posX;
-            state.posY = c.posY;
-            state.velX = 0;
-            state.velY = 0;
-            body.SetTransformXY(toMeters(c.posX), toMeters(c.posY), 0);
-            body.SetLinearVelocity({ x: 0, y: 0 });
-            body.SetAwake(true);
-        }
-    }
-
-    public cancelVelocities(): void {
-        for (let i = 0; i < this.particleStates.length; i++) {
-            const state = this.particleStates[i];
-            const body = this.bodies[i];
-            if (state === undefined || body === undefined) {
-                continue;
-            }
-            state.velX = 0;
-            state.velY = 0;
-            body.SetLinearVelocity({ x: 0, y: 0 });
-            body.SetAwake(true);
-        }
-    }
-
-    private applyMass(body: b2Body, mass: number): void {
-        const safeMass = Math.max(mass, 0.001);
-        this.massData.mass = safeMass;
-        this.massData.I = 1;
-        this.massData.center.Set(0, 0);
-        body.SetMassData(this.massData);
-    }
-
-    private syncMass(particleIndex: number): void {
-        const state = this.particleStates[particleIndex];
-        const body = this.bodies[particleIndex];
-        if (state === undefined || body === undefined) {
-            return;
-        }
-        if (Math.abs(body.GetMass() - state.mass) > 1e-8) {
-            this.applyMass(body, state.mass);
-        }
-    }
-
-    private pushStatesToWorld(): void {
-        for (let i = 0; i < this.particleStates.length; i++) {
-            if (this.pinned[i] === true) {
-                continue;
-            }
-
-            const state = this.particleStates[i];
-            const body = this.bodies[i];
-            if (state === undefined || body === undefined) {
-                continue;
-            }
-
-            this.syncMass(i);
-
-            const bodyPos = body.GetPosition();
-            const bodyVel = body.GetLinearVelocity();
-            const posX = toPixels(bodyPos.x);
-            const posY = toPixels(bodyPos.y);
-            const velX = toPixels(bodyVel.x);
-            const velY = toPixels(bodyVel.y);
-
-            if (Math.abs(state.posX - posX) > POS_EPSILON_PX || Math.abs(state.posY - posY) > POS_EPSILON_PX) {
-                body.SetTransformXY(toMeters(state.posX), toMeters(state.posY), 0);
-                body.SetAwake(true);
-            }
-            if (Math.abs(state.velX - velX) > VEL_EPSILON_PX || Math.abs(state.velY - velY) > VEL_EPSILON_PX) {
-                body.SetLinearVelocity({ x: toMeters(state.velX), y: toMeters(state.velY) });
-                body.SetAwake(true);
-            }
-        }
-    }
-
-    private pushVelocitiesToWorld(): void {
-        for (let i = 0; i < this.particleStates.length; i++) {
-            if (this.pinned[i] === true) {
-                continue;
-            }
-
-            const state = this.particleStates[i];
-            const body = this.bodies[i];
-            if (state === undefined || body === undefined) {
-                continue;
-            }
-            body.SetLinearVelocity({ x: toMeters(state.velX), y: toMeters(state.velY) });
-            body.SetAwake(true);
-        }
-    }
-
-    private pullStatesFromWorld(): void {
-        for (let i = 0; i < this.particleStates.length; i++) {
-            const state = this.particleStates[i];
-            const body = this.bodies[i];
-            if (state === undefined || body === undefined) {
-                continue;
-            }
-            const bodyPos = body.GetPosition();
-            const bodyVel = body.GetLinearVelocity();
-            state.posX = toPixels(bodyPos.x);
-            state.posY = toPixels(bodyPos.y);
-            state.velX = toPixels(bodyVel.x);
-            state.velY = toPixels(bodyVel.y);
-        }
-    }
-
-    private syncDistanceJoints(): void {
-        for (let i = 0; i < this.distanceConstraints.length; i++) {
-            const c = this.distanceConstraints[i];
-            const joint = this.distanceJoints[i];
-            if (c === undefined || joint === undefined) {
-                continue;
-            }
-            const restLength = Math.max(toMeters(c.distance), 0.01);
-            if (Math.abs(joint.GetLength() - restLength) > 1e-6) {
-                joint.SetLength(restLength);
-                joint.SetMinLength(restLength * 0.85);
-                joint.SetMaxLength(restLength * 1.15);
-            }
-        }
-    }
-
-    private syncFixedConstraints(): void {
-        this.pinned.fill(false);
-
-        for (const c of this.fixedConstraints) {
-            const body = this.bodies[c.particleIndex];
-            const state = this.particleStates[c.particleIndex];
-            if (body === undefined || state === undefined) {
-                continue;
-            }
-
-            if (!c.isEnabled) {
-                if (body.GetType() !== b2BodyType.b2_dynamicBody) {
-                    body.SetType(b2BodyType.b2_dynamicBody);
-                    this.applyMass(body, state.mass);
-                    body.SetAwake(true);
-                }
-                continue;
-            }
-
-            this.pinned[c.particleIndex] = true;
-            if (body.GetType() !== b2BodyType.b2_kinematicBody) {
-                body.SetType(b2BodyType.b2_kinematicBody);
-            }
-
-            body.SetTransformXY(toMeters(c.posX), toMeters(c.posY), 0);
-            body.SetLinearVelocity({ x: 0, y: 0 });
-            state.posX = c.posX;
-            state.posY = c.posY;
-            state.velX = 0;
-            state.velY = 0;
-            body.SetAwake(true);
-        }
-    }
-
-    private applyAngularConstraints(dt: number): void {
-        for (const angularC of this.angularConstraints) {
-            const state0 = this.particleStates[angularC.particleIndex0];
-            const state1 = this.particleStates[angularC.particleIndex1];
-            const state2 = this.particleStates[angularC.particleIndex2];
-            const body0 = this.bodies[angularC.particleIndex0];
-            const body1 = this.bodies[angularC.particleIndex1];
-            const body2 = this.bodies[angularC.particleIndex2];
-            if (
-                state0 === undefined ||
-                state1 === undefined ||
-                state2 === undefined ||
-                body0 === undefined ||
-                body1 === undefined ||
-                body2 === undefined
-            ) {
-                continue;
-            }
-
-            const dirX0 = state0.posX - state1.posX;
-            const dirY0 = state0.posY - state1.posY;
-            const dirX1 = state2.posX - state0.posX;
-            const dirY1 = state2.posY - state0.posY;
-            const dirX2 = state2.posX - state1.posX;
-            const dirY2 = state2.posY - state1.posY;
-
-            const length0 = Math.sqrt(dirX0 * dirX0 + dirY0 * dirY0);
-            const length1 = Math.sqrt(dirX1 * dirX1 + dirY1 * dirY1);
-            const length2 = Math.sqrt(dirX2 * dirX2 + dirY2 * dirY2);
-            if (length0 < 0.001 || length1 < 0.001 || length2 < 0.001) {
-                continue;
-            }
-
-            const currentAngle = wrapAngle0To2Pi(Math.atan2(dirY0, dirX0) - Math.atan2(dirY2, dirX2));
-            const angleDelta = wrapAngleNegPiToPi(angularC.targetAngle - currentAngle);
-            const strength = angleDelta * ANGULAR_TIGHTNESS * dt * angularC.tightnessFactor;
-
-            const invDistance0 = (strength * state0.inverseMass) / length0;
-            const invDistance1 = ((strength * state1.inverseMass) / length1) * 2.0;
-            const invDistance2 = (strength * state2.inverseMass) / length2;
-
-            const fDirX0 = -dirY0 * invDistance0;
-            const fDirY0 = dirX0 * invDistance0;
-            const fDirX1 = -dirY1 * invDistance1;
-            const fDirY1 = dirX1 * invDistance1;
-            const fDirX2 = dirY2 * invDistance2;
-            const fDirY2 = -dirX2 * invDistance2;
-
-            const angleSpeed = wrapAngleNegPiToPi(currentAngle - angularC.lastAngle);
-            const speedDamping = Math.min(
-                0.5,
-                Math.pow(angleDelta * angleSpeed > 0 ? Math.abs(angleDelta) * 3 : 0.0, 3) * ANGULAR_DAMPING * dt,
-            );
-
-            this.applyVelocityDelta(body0, state0, fDirX0 - state0.velX * speedDamping, fDirY0 - state0.velY * speedDamping);
-            this.applyVelocityDelta(body1, state1, fDirX1 - state1.velX * speedDamping, fDirY1 - state1.velY * speedDamping);
-            this.applyVelocityDelta(body2, state2, fDirX2 - state2.velX * speedDamping, fDirY2 - state2.velY * speedDamping);
-
-            // Hard joint limits: if the actual angle is outside the allowed
-            // window, drive it back toward the violated limit with a stiff
-            // (3x), capped restoring impulse. The IK targets are never out
-            // of window (measured: 0/4802 backwards knee targets), so
-            // violations are transient load excursions; the impulse walks
-            // them back within a few steps. Measured with the strict pi
-            // knee ceiling: residual violations are rare (44/4802 samples)
-            if (angularC.minAngle !== undefined && angularC.maxAngle !== undefined) {
-                const limitDelta = this.jointLimitDelta(currentAngle, angularC.minAngle, angularC.maxAngle);
-                if (limitDelta !== 0) {
-                    // Two-regime correction. SHALLOW violations (<= the cap)
-                    // get the gentle proportional impulse - that regime keeps
-                    // the soft-body dynamics stable. DEEP violations (push
-                    // load shoving a knee through straight into inversion,
-                    // measured: 2.5s sustained episodes at 150deg past
-                    // straight during Push) need a correction that actually
-                    // WINS against the push target-tracking, whose strength
-                    // scales with the full target error (~3rad). The old
-                    // flat 0.15rad cap made the limit term 20x weaker than
-                    // the push term, so the joint sat inverted for seconds.
-                    // The deep regime scales linearly with depth but stays
-                    // at half the target-tracking gain: strong enough to
-                    // hold the window, gentle enough not to destabilize
-                    // reaches (a full-strength version stalled 5/12 matrix
-                    // anchors - measured).
-                    const absDelta = Math.abs(limitDelta);
-                    const effectiveDelta = absDelta <= LIMIT_MAX_CORRECTION
-                        ? limitDelta
-                        : limitDelta * (LIMIT_MAX_CORRECTION / absDelta) * (absDelta / Math.PI) * 4;
-                    const strength = effectiveDelta * ANGULAR_TIGHTNESS * dt * angularC.tightnessFactor * 3;
-                    const invDistance0 = (strength * state0.inverseMass) / length0;
-                    const invDistance1 = ((strength * state1.inverseMass) / length1) * 2.0;
-                    const invDistance2 = (strength * state2.inverseMass) / length2;
-                    const fDirX0 = -dirY0 * invDistance0;
-                    const fDirY0 = dirX0 * invDistance0;
-                    const fDirX1 = -dirY1 * invDistance1;
-                    const fDirY1 = dirX1 * invDistance1;
-                    const fDirX2 = dirY2 * invDistance2;
-                    const fDirY2 = -dirX2 * invDistance2;
-                    // The velocity damping term is ESSENTIAL: without it the
-                    // limit correction fights push load undamped, injects
-                    // energy, and the knee pops deep past straight (measured:
-                    // worst violation 150deg past straight undamped vs <=15deg
-                    // damped).
-                    this.applyVelocityDelta(body0, state0, fDirX0 - state0.velX * speedDamping, fDirY0 - state0.velY * speedDamping);
-                    this.applyVelocityDelta(body1, state1, fDirX1 - state1.velX * speedDamping, fDirY1 - state1.velY * speedDamping);
-                    this.applyVelocityDelta(body2, state2, fDirX2 - state2.velX * speedDamping, fDirY2 - state2.velY * speedDamping);
-                }
-            }
-
-            angularC.lastAngle = currentAngle;
-        }
-    }
-
-    /** Signed angular correction to bring the angle back into the allowed
-     *  window: 0 when inside, positive when below minAngle (angle must
-     *  increase), negative when above maxAngle. Matches the target-tracking
-     *  impulse convention (positive delta = increase angle).
-     *  ARC-AWARE: the window is an ARC through 0/2pi - when minAngle >
-     *  maxAngle the allowed region is [0,maxAngle] U [minAngle,2pi) (the
-     *  forbidden arc (maxAngle, minAngle) through pi). The hip needs this:
-     *  its legal arc is through 0 (thigh down along the spine) and the
-     *  forbidden region is the whole backward hemisphere through pi
-     *  (measured: the linear window permitted the thigh rotating backward
-     *  behind the body - user-reported "leg rotates backwards"). */
-    private jointLimitDelta(currentAngle: number, minAngle: number, maxAngle: number): number {
-        if (minAngle > maxAngle) {
-            // Arc window through 0: allowed = [0, max] U [min, 2pi).
-            if (currentAngle <= maxAngle) {
-                return wrapAngleNegPiToPi(maxAngle - currentAngle);
-            }
-            if (currentAngle >= minAngle) {
-                return wrapAngleNegPiToPi(minAngle - currentAngle);
-            }
-            // Deep in the forbidden arc: pull toward the NEARER edge.
-            const distToMin = currentAngle - minAngle;
-            const distToMax = maxAngle + Math.PI * 2 - currentAngle;
-            return distToMin < distToMax
-                ? wrapAngleNegPiToPi(minAngle - currentAngle)
-                : wrapAngleNegPiToPi(maxAngle - currentAngle);
-        }
-        if (currentAngle < minAngle) {
-            return wrapAngleNegPiToPi(minAngle - currentAngle);
-        }
-        if (currentAngle > maxAngle) {
-            return wrapAngleNegPiToPi(maxAngle - currentAngle);
-        }
-        return 0;
-    }
-
-    private applyVelocityDelta(body: b2Body, state: PhysicalParticleState, deltaVelX: number, deltaVelY: number): void {
-        if (body.GetType() === b2BodyType.b2_kinematicBody) {
-            return;
+            return false;
         }
 
-        const mass = Math.max(state.mass, 0.001);
-        body.ApplyLinearImpulseToCenter(
-            {
-                x: mass * toMeters(deltaVelX),
-                y: mass * toMeters(deltaVelY),
-            },
-            true,
-        );
-    }
-
-    private collideWallAndFloor(): void {
-        for (let i = 0; i < this.particleStates.length; i++) {
-            if (this.pinned[i] === true || this.wallCollides[i] !== true) {
-                continue;
-            }
-
-            const state = this.particleStates[i];
-            const body = this.bodies[i];
-            if (state === undefined || body === undefined) {
-                continue;
-            }
-
-            let collided = false;
-            if (this.wall !== undefined) {
-                collided = this.wall.collideParticle(state);
-            }
-
-            if (state.posY > BOTTOM_PX) {
-                state.posY = BOTTOM_PX;
-                if (state.velY > 0) {
-                    state.velY = 0;
-                }
-                collided = true;
-            }
-
-            if (collided) {
-                body.SetTransformXY(toMeters(state.posX), toMeters(state.posY), 0);
-                body.SetLinearVelocity({ x: toMeters(state.velX), y: toMeters(state.velY) });
-                body.SetAwake(true);
-            }
-        }
+        return true;
     }
 }
