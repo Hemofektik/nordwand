@@ -32,8 +32,13 @@ import { defined } from "./assert.ts";
 export type ClimberPhase = "LegReach" | "Push" | "HandReach" | "PullUp" | "Idle";
 
 const PHASE_TIMEOUT = 3.0;
-/** Minimum Push duration so the body gains height before HandReach. */
-const MIN_PUSH = 0.5;
+/** Short floor for the normal Push phase: the body needs a moment to
+ *  actually gain height before HandReach re-picks, but the phase no longer
+ *  waits out a fixed 0.5s - it ends as soon as the knee-extension event
+ *  fires (motor "latched"), which removes the dead pause between cycles
+ *  (user: motion should be fluid). Substitution pushes keep their explicit
+ *  longer holds via pushHoldUntil. */
+const MIN_PUSH = 0.15;
 /** Preferred maximum foot leap: the foot rises at most this many px above
  *  its origin (about 2-3 anchors at the wall's anchor spacing). Among valid
  *  candidates the pick then prefers the highest anchor BELOW this cap; only
@@ -563,13 +568,17 @@ export class Climber {
         // where it becomes the reaching leg. This ordering keeps at most one
         // limb free in every phase (§9.2 invariant).
         //
-        // Push ends when the knee is near-straight AND the body has had at
-        // least MIN_PUSH seconds to actually gain height (an already-extended
-        // knee would otherwise end the phase instantly, and a substitution
-        // push must move the body before HandReach re-picks).
-        this.motor.pushWithLeg(this.driveLegSide);
+        // Push ends on the knee-extension EVENT (motor returns "latched"
+        // when the knee is within tolerance of straight), gated only by a
+        // short floor so the body actually gains height. The old fixed
+        // MIN_PUSH wait ran to the full 0.5s even when the knee was already
+        // extended after ~0.2s - that dead wait was the visible PAUSE
+        // between cycles (user: motion should be fluid). Substitution
+        // pushes keep their explicit hold (pushHoldUntil) - they must move
+        // the body before HandReach re-picks.
+        const status = this.motor.pushWithLeg(this.driveLegSide);
         const minTime = this.pushHoldUntil > 0 ? this.pushHoldUntil : MIN_PUSH;
-        if (this.phaseElapsed >= minTime) {
+        if (this.phaseElapsed >= minTime && status === "latched") {
             if (this.pushHoldUntil > 0) {
                 this.log(`Push: held substitution push`);
             } else {

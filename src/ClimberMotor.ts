@@ -137,8 +137,12 @@ const PLANTED_IK_SCALE = 0.85;
 const PULL_AMOUNT = 5;
 /** A hand reach in flight longer than this gets the planted-arm haul assist. */
 const REACH_ASSIST_AFTER = 1.5;
-const ANGLE_SPEED = 10;
-const REACH_ANGLE_SPEED = 14;
+const ANGLE_SPEED = 5;
+const REACH_ANGLE_SPEED = 7;
+// NOTE: halved from 10/14 (user: the IK flex/extension animation is too
+// fast - half speed looks natural). All joint motion (reaches, planted
+// posing, pushes, coils) flows through these two constants, so the whole
+// animation scales down uniformly.
 
 interface ReachMove {
     kind: LimbKind;
