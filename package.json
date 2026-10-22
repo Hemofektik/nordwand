@@ -8,7 +8,8 @@
         "typecheck": "node ./node_modules/typescript/lib/tsc.js --noEmit",
         "test": "vitest run",
         "build": "npm run typecheck && vite build",
-        "preview": "vite preview"
+        "preview": "vite preview",
+        "deploy": "npm run build && bash scripts/deploy.sh"
     },
     "devDependencies": {
         "typescript": "7.0.2",
