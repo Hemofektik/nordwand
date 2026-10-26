@@ -4,7 +4,7 @@ import { MusicPlayer } from "./MusicPlayer.ts";
 import { SpringPhysics } from "./Physics.ts";
 import { PixelSprite } from "./PixelSprite.ts";
 import { PixelPresenter } from "./pixelPresenter.ts";
-import { drawClouds, drawMountains, drawSky, loadPixelScene } from "./pixelScene.ts";
+import { drawBirds, drawClouds, drawMountains, drawSky, loadPixelScene } from "./pixelScene.ts";
 import { clientToLogical } from "./pixelViewport.ts";
 import { Player } from "./Player.ts";
 import { bowDeltaFromLean, combinedLean, leanFromPointer } from "./touchInput.ts";
@@ -419,7 +419,11 @@ export class Game {
         this.handleInput(this.frame_delta_smoothed);
 
         if (this.player !== undefined) {
-            this.cam.update(this.player.posX, this.player.posY, this.frame_delta!);
+            // Look toward the rock so the climber sits in the open sky. The
+            // body itself is not moved.
+            const logicalWidth = this.cam.canvas.width / Math.max(1, this.cam.pixelScale);
+            const wallBias = Math.min(56, Math.max(20, logicalWidth * 0.22));
+            this.cam.update(this.player.posX + wallBias, this.player.posY, this.frame_delta!);
         }
 
         if (!this.paused) { // update world
@@ -446,6 +450,7 @@ export class Game {
         {
             drawMountains(this.ctx, this.cam);
             drawClouds(this.ctx, this.cam, this.gameTime);
+            drawBirds(this.ctx, this.gameTime);
             this.wall?.draw(this.ctx, this.cam, this.debug);
             this.updateHudInset();
             this.player?.draw(this.ctx, this.cam, this.debug);
@@ -566,7 +571,7 @@ export class Game {
                 return;
             }
             const t = (this.leanVisual + 1) / 2;
-            knob.style.left = `calc(${t * 100}% - 16px)`;
+            knob.style.left = `calc(${t * 100}% - 10px)`;
         };
         const read = (ev: PointerEvent): void => {
             const rect = pad.getBoundingClientRect();

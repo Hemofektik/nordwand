@@ -96,6 +96,6 @@ npm run build       # typecheck + Vite production build
 
 The image at the top is `concept/nordwand_mockup_04_large.png` — the intended mood of the finished game. Wide sky, layered mountains, a textured wall, and a climber who looks small because the drop is real.
 
-The live view follows that plate. `public/sprites/bg_mountains.png`, `sprite_wolken_01.png`, and `tex_fels_01.png` are the concept PSDs (`bg_mountains`, `sprite_wolken_01`, `tex_fels_01`) exported with their alpha. The wall is that rock texture, the rope and the climber are whole pixels, and the frame is scaled with nearest-neighbour (`image-rendering: pixelated`, smoothing off). **D** still draws the debug bones and the anchor marks.
+The live view follows that plate. The sky is a flat `#bad4ed`. Distant ridges are `public/sprites/bg_mountains.png` (the `bg_mountains` PSD). Clouds are solid white pixels with a one-pixel `#e5eaef` underside. The wall is a world-locked olive-grey pixel texture — strata, vertical ridges, speckle, moss on the lips — drawn just outside the collision line, so the route itself does not change. The climber is a pixel figure posed on the ragdoll. The rope is the dark brown `#2a0d03` line, with a metal piton where it meets the rock. The frame is scaled with nearest-neighbour (`image-rendering: pixelated`, smoothing off). **D** still draws the debug bones and the anchor marks.
 
 Music in the original build: *sevenhundredbeats* by Duncan Beattie.

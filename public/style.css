@@ -10,7 +10,8 @@ html, body {
     touch-action: none;
     background: #000;
     color: white;
-    font-family: ui-monospace, "Courier New", monospace;
+    font-family: "Courier New", Courier, monospace;
+    -webkit-font-smoothing: none;
     user-select: none;
     -webkit-user-select: none;
     -webkit-touch-callout: none;
@@ -39,10 +40,10 @@ canvas {
     top: calc(10px + env(safe-area-inset-top));
     z-index: 4;
     pointer-events: none;
-    font-size: clamp(14px, 3.6vw, 22px);
-    letter-spacing: 0.04em;
+    font-size: 13px;
+    letter-spacing: 0.08em;
     color: #f4f7fb;
-    text-shadow: 1px 1px 0 #000, -1px 0 0 #000;
+    text-shadow: 1px 1px 0 #1a120e, -1px 0 0 #1a120e, 0 -1px 0 #1a120e, 0 1px 0 #1a120e;
 }
 
 #songinfo {
@@ -143,13 +144,15 @@ ul#controls li label {
     right: 0;
     bottom: 0;
     display: flex;
-    gap: 8px;
+    gap: 6px;
     align-items: stretch;
-    padding: 8px;
-    padding-bottom: calc(8px + env(safe-area-inset-bottom));
-    padding-left: calc(8px + env(safe-area-inset-left));
-    padding-right: calc(8px + env(safe-area-inset-right));
+    padding: 6px;
+    padding-bottom: calc(6px + env(safe-area-inset-bottom));
+    padding-left: calc(6px + env(safe-area-inset-left));
+    padding-right: calc(6px + env(safe-area-inset-right));
     touch-action: none;
+    pointer-events: none;
+    background: transparent;
 }
 
 /* Wide windows keep the picture clear; the keyboard still leans and climbs.
@@ -167,10 +170,11 @@ html.touch-input #touch-hud { display: flex; }
 #lean {
     position: relative;
     flex: 1;
-    min-height: 88px;
-    background: rgba(0, 0, 0, 0.55);
-    border: 2px solid #1a120e;
+    min-height: 52px;
+    background: rgba(14, 18, 22, 0.32);
+    border: 2px solid rgba(239, 232, 220, 0.42);
     touch-action: none;
+    pointer-events: auto;
 }
 
 .pad-caption {
@@ -179,10 +183,11 @@ html.touch-input #touch-hud { display: flex; }
     left: 0;
     right: 0;
     text-align: center;
-    font-size: 11px;
-    letter-spacing: 0.14em;
+    font-size: 10px;
+    letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: #efe8dc;
+    color: #f4f7fb;
+    text-shadow: 1px 1px 0 #1a120e;
     pointer-events: none;
 }
 
@@ -201,43 +206,45 @@ html.touch-input #touch-hud { display: flex; }
 
 #lean-knob {
     position: absolute;
-    top: 22px;
-    bottom: 22px;
-    width: 28px;
-    left: calc(50% - 16px);
-    background: #efe8dc;
-    border: 2px solid #1a120e;
+    top: 14px;
+    bottom: 14px;
+    width: 16px;
+    left: calc(50% - 10px);
+    background: rgba(239, 232, 220, 0.78);
+    border: 2px solid rgba(26, 18, 14, 0.55);
     pointer-events: none;
 }
 
 #touch-actions {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    width: 108px;
+    gap: 6px;
+    width: 76px;
+    pointer-events: auto;
 }
 
 #touch-actions button {
-    border: 2px solid #1a120e;
+    border: 2px solid rgba(239, 232, 220, 0.4);
     color: #f4e6d4;
     font-family: inherit;
     font-weight: 700;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
     touch-action: manipulation;
+    text-shadow: 1px 1px 0 #1a120e;
 }
 
 #letgo {
-    flex: 0 0 36px;
-    background: #2a241f;
-    font-size: 12px;
+    flex: 0 0 26px;
+    background: rgba(42, 36, 31, 0.4);
+    font-size: 10px;
 }
 
 #climb {
     flex: 1;
-    min-height: 64px;
-    background: #b4332a;
-    font-size: 15px;
+    min-height: 40px;
+    background: rgba(180, 51, 42, 0.48);
+    font-size: 12px;
 }
 
 #letgo:active, #climb:active {

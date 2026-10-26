@@ -1,6 +1,6 @@
 import type { Camera } from "./Camera.ts";
 import { EGameState } from "./Core.ts";
-import { fillDisc, fillRing } from "./pixelDraw.ts";
+import { fillRing } from "./pixelDraw.ts";
 
 export class Exhaustion {
     public gameState: number;
@@ -60,19 +60,14 @@ export class Exhaustion {
             return;
         }
 
-        // The breath ring crosses the white mark when respiration is 0,
-        // which is the same moment tryMove() counts as perfect.
-        const onPhone = this.hudInsetBottom > 16 || ctx.canvas.width < 500;
-        const unit = onPhone ? Math.max(8, Math.round(Math.min(ctx.canvas.width, ctx.canvas.height) / 28)) : 16;
-        let posX = onPhone ? ctx.canvas.width - unit * 2 - 8 : Math.round(ctx.canvas.width * 0.72);
-        let posY = onPhone ? ctx.canvas.height - this.hudInsetBottom - unit * 2 - 6 : Math.round(ctx.canvas.height * 0.55);
-        posX = Math.max(unit * 2 + 2, Math.min(posX, ctx.canvas.width - unit * 2 - 2));
-        posY = Math.max(unit * 2 + 2, Math.min(posY, ctx.canvas.height - unit * 2 - 2));
+        // A small ring in the corner. It still crosses the white mark when
+        // respiration is 0 — the same moment tryMove() counts as perfect.
+        const unit = 4;
+        const posX = 16;
+        const posY = 40;
 
-        fillDisc(ctx, posX, posY, unit * 2 + 1, "#000000");
-        fillDisc(ctx, posX, posY, unit + 3, "#3a3a3a");
-        fillDisc(ctx, posX, posY, unit - 1, "#cccccc");
-        fillRing(ctx, posX, posY, unit - 1, unit + 1, "#ffffff");
+        fillRing(ctx, posX, posY, unit + 2, unit + 3, "#2a241f");
+        fillRing(ctx, posX, posY, unit - 0.2, unit + 0.6, "#ffffff");
 
         const validMoveAnimTime = 1.0;
         const lastValidMoveAnimTime = this.lastValidMoveTime - this.time + validMoveAnimTime;

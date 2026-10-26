@@ -1,7 +1,13 @@
 import type { Camera } from "./Camera.ts";
 import type { SpringPhysics } from "./Physics.ts";
+import { snapScreen } from "./pixelDraw.ts";
 import type { Skeleton } from "./Skeleton.ts";
 import type { Wall, WallAnchor } from "./Wall.ts";
+
+const ROPE = "#2a0d03";
+const PITON = "#b7bcc4";
+const PITON_DARK = "#4e545c";
+const PITON_HI = "#e7ebf0";
 
 function beginDrawPixelLine(ctx: CanvasRenderingContext2D, color: string): void {
     ctx.beginPath();
@@ -125,9 +131,68 @@ export class Rope {
             endDrawPixelLine(ctx);
         };
 
-        // Light strand with a 1-pixel shadow so the rope reads on both the sky and the rock.
-        plot("#1a120e", cam.pixelScale);
-        plot("#efe6d6", 0);
+        plot(ROPE, 0);
+        this.drawPitons(ctx, cam);
+    }
+
+    /** Metal clips where the rope meets the rock. Drawn only; the constraints are unchanged. */
+    private drawPitons(ctx: CanvasRenderingContext2D, cam: Camera): void {
+        const s = Math.max(1, cam.pixelScale);
+        const seen = new Set<string>();
+        const mark = (worldX: number, worldY: number): void => {
+            const p = snapScreen(cam, worldX, worldY);
+            const key = `${p.x},${p.y}`;
+            if (seen.has(key)) {
+                return;
+            }
+            seen.add(key);
+            ctx.fillStyle = PITON_DARK;
+            ctx.fillRect(p.x - s, p.y - s, s * 3, s * 3);
+            ctx.fillStyle = PITON;
+            ctx.fillRect(p.x, p.y - s, s * 2, s * 2);
+            ctx.fillStyle = PITON_HI;
+            ctx.fillRect(p.x, p.y - s, s, s);
+        };
+
+        for (const index of this.fixedConstraintIndices) {
+            const fixed = this.phys.fixedConstraints[index];
+            if (fixed === undefined || !fixed.isEnabled) {
+                continue;
+            }
+            mark(fixed.posX, fixed.posY);
+        }
+
+        if (this.fixedConstraintIndices.length < 2) {
+            return;
+        }
+        const first = this.phys.fixedConstraints[this.fixedConstraintIndices[0]!];
+        const second = this.phys.fixedConstraints[this.fixedConstraintIndices[1]!];
+        if (first === undefined || second === undefined) {
+            return;
+        }
+        const i0 = Math.min(first.particleIndex, second.particleIndex);
+        const i1 = Math.max(first.particleIndex, second.particleIndex);
+        for (let i = i0; i <= i1; i += 3) {
+            const state = this.phys.particleStates[i];
+            if (state === undefined) {
+                continue;
+            }
+            const wallX = this.wall.wallXAtY(state.posY);
+            if (wallX === undefined) {
+                continue;
+            }
+            mark(wallX, state.posY);
+            const bolt = snapScreen(cam, wallX, state.posY);
+            const rope = snapScreen(cam, state.posX, state.posY);
+            ctx.fillStyle = ROPE;
+            const dx = rope.x - bolt.x;
+            const dy = rope.y - bolt.y;
+            const steps = Math.max(Math.abs(dx), Math.abs(dy)) / s;
+            for (let n = 0; n <= steps; n++) {
+                const t = steps === 0 ? 0 : n / steps;
+                ctx.fillRect(Math.round(bolt.x + dx * t), Math.round(bolt.y + dy * t), s, s);
+            }
+        }
     }
 
     public lengthenEnd(): void {
