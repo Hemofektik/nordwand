@@ -147,11 +147,11 @@ export class Rope {
             }
             seen.add(key);
             ctx.fillStyle = PITON_DARK;
-            ctx.fillRect(p.x - s, p.y - s, s * 3, s * 3);
+            ctx.fillRect(p.x - s, p.y - 2 * s, s * 4, s * 4);
             ctx.fillStyle = PITON;
-            ctx.fillRect(p.x, p.y - s, s * 2, s * 2);
+            ctx.fillRect(p.x, p.y - s, s * 3, s * 2);
             ctx.fillStyle = PITON_HI;
-            ctx.fillRect(p.x, p.y - s, s, s);
+            ctx.fillRect(p.x + s, p.y - s, s, s);
         };
 
         for (const index of this.fixedConstraintIndices) {

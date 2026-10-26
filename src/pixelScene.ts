@@ -201,13 +201,12 @@ export function drawBirds(ctx: CanvasRenderingContext2D, timeSeconds: number): v
         const drift = Math.sin(timeSeconds * 0.12 + bird[2]!) * 14;
         const x = Math.round(bird[0]! * width * 0.7 + drift);
         const y = Math.round(bird[1]! * height * 0.72 + Math.sin(timeSeconds * 0.4 + bird[2]!) * 1.5);
-        const flap = Math.sin(timeSeconds * 3 + bird[2]!) > 0;
-        // Shallow V, three to five pixels.
-        ctx.fillRect(x, y, 1, 1);
-        ctx.fillRect(x + 2, y + (flap ? 0 : 1), 1, 1);
-        ctx.fillRect(x - 2, y + (flap ? 0 : 1), 1, 1);
-        ctx.fillRect(x + 1, y + 1, 1, 1);
+        const lift = Math.sin(timeSeconds * 3 + bird[2]!) > 0 ? 0 : 1;
+        ctx.fillRect(x - 2, y + lift, 1, 1);
+        ctx.fillRect(x + 2, y + lift, 1, 1);
         ctx.fillRect(x - 1, y + 1, 1, 1);
+        ctx.fillRect(x + 1, y + 1, 1, 1);
+        ctx.fillRect(x, y + 2, 1, 1);
     }
 }
 
@@ -241,18 +240,20 @@ function rockRgb(worldX: number, worldY: number, depth: number, underLip: boolea
     } else if (speck < 4) {
         idx -= 1;
     }
-    if (depth < 0.8) {
-        idx -= 2;
-    } else if (depth < 2) {
+    if (depth < 1.2) {
         idx -= 1;
     }
-    if (underLip && depth < 4) {
+    if (underLip && depth < 5) {
         idx -= 2;
     }
     if (idx < 0) {
         idx = 0;
     } else if (idx >= ROCK.length) {
         idx = ROCK.length - 1;
+    }
+    // The lip stays olive-grey. Near-black is for speckles and the underside of an overhang.
+    if (!underLip && depth < 2 && idx < 4) {
+        idx = 4;
     }
     return ROCK[idx]!;
 }
@@ -295,7 +296,7 @@ export function drawRockFace(ctx: CanvasRenderingContext2D, cam: Camera, wall: W
         const shelf = offset + 1.2 < offsetDown;
         const cap = offset > offsetUp + 1.2 && offset > 6;
         const underLip = offset > rockSilhouetteOffset(yDown + 3) + 3;
-        const tuft = hash(Math.floor(edgeWorld), yDown) % 19 === 0;
+        const tuft = hash(Math.floor(edgeWorld), yDown) % 11 === 0;
 
         if (shelf || cap || tuft) {
             const blades = 1 + (hash(Math.floor(edgeWorld), yDown) % 3);
