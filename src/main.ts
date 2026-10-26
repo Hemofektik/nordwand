@@ -12,11 +12,8 @@ function main(): void {
         return;
     }
 
-    // Canvas Setup
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
-
-    // Initialize the game
+    // The on-screen canvas is sized in device pixels by Game, then the
+    // picture is blitted up by an integer scale. Don't pin it to CSS pixels.
     const game = new Game(canvas);
     game.loadLevel(EGameState.Menu | EGameState.Game | EGameState.Climbing, 12345);
 

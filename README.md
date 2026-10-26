@@ -17,7 +17,18 @@ npm install
 npm run dev
 ```
 
-Then open [http://localhost:8000](http://localhost:8000). The canvas is 560×840, tall like the wall itself.
+Then open [http://localhost:8000](http://localhost:8000). The picture is the concept plate — about 420 pixels tall, the size of `bg_mountains` — scaled up by a whole number so every pixel stays square. On a phone that is a portrait view. Pinch-zoom, scrolling, and pull-to-refresh are disabled.
+
+The climber already moves by joint angles (see `concept/adr/0001-angular-only-motion.md`). A phone only needs the same two gestures the keyboard has: bow the body, and commit a move on the breath.
+
+| Touch | Action |
+| --- | --- |
+| **Lean** (bottom left) | Hold and drag. Right bows in toward the rock, left bows out. Same angular offset as **A** / **D**. |
+| **Climb** (bottom right) | Commit a move. Time it so the black breath ring sits on the white mark — a tight ring is a perfect move. Tapping the wall does this too. Same as **W**. |
+| **Let go** | Release every hold. Same as **F**. |
+| Top icons | Pause, new wall, mute, help. |
+
+The lean pad and the two buttons hide on a wide desktop with a mouse, and come back if the window is narrow or a touch is used. Keyboard and the mouse wheel keep working either way.
 
 | Key | Action |
 | --- | --- |
@@ -28,7 +39,9 @@ Then open [http://localhost:8000](http://localhost:8000). The canvas is 560×840
 | **M** | Mute |
 | **N** | Next song |
 | **S** | Freeze physics (zero velocities) |
-| **D** | Toggle debug |
+| **D** | Toggle debug. Holding it also leans in, same as the right arrow. |
+| **A** / Left, **Right** | Lean out / lean in |
+| **W**, Up | Climb |
 | Mouse wheel | Zoom |
 
 ## How it feels
@@ -63,7 +76,11 @@ src/
   Rope.ts          pixel rope
   Climber.ts       decision layer: phases, filter chain, stall ladder
   ClimberMotor.ts  motor layer: move API, IK, angle animation
-  Camera.ts        pixel-snapped world camera
+  Camera.ts        world camera (one world unit = one logical pixel)
+  pixelViewport.ts integer scale of that frame onto the screen
+  pixelScene.ts    sky, mountain plate, clouds, rock texture
+  pixelClimber.ts  pixel figure drawn from the ragdoll
+  touchInput.ts    lean pad, same bow as the A/D keys
   MusicPlayer.ts   songs and SFX
   PixelSprite.ts   nearest-neighbor scaled sprites
 public/            CSS, control icons, sprites
@@ -77,6 +94,8 @@ npm run build       # typecheck + Vite production build
 
 ## Concept
 
-The image at the top is `concept/nordwand_mockup_04_large.png` — the intended mood of the finished game. Wide sky, layered mountains, a textured wall, and a climber who looks small because the drop is real. The live prototype is still drawing debug bones and wall segments; the mockup is the north face those bones are trying to become.
+The image at the top is `concept/nordwand_mockup_04_large.png` — the intended mood of the finished game. Wide sky, layered mountains, a textured wall, and a climber who looks small because the drop is real.
+
+The live view follows that plate. `public/sprites/bg_mountains.png`, `sprite_wolken_01.png`, and `tex_fels_01.png` are the concept PSDs (`bg_mountains`, `sprite_wolken_01`, `tex_fels_01`) exported with their alpha. The wall is that rock texture, the rope and the climber are whole pixels, and the frame is scaled with nearest-neighbour (`image-rendering: pixelated`, smoothing off). **D** still draws the debug bones and the anchor marks.
 
 Music in the original build: *sevenhundredbeats* by Duncan Beattie.

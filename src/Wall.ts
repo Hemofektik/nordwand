@@ -1,6 +1,7 @@
 import type { Camera } from "./Camera.ts";
 import { RandF, SetNoiseIndex } from "./MathUtils.ts";
 import type { PhysicalParticleState } from "./Physics.ts";
+import { drawRockFace } from "./pixelScene.ts";
 
 export class WallSegment {
     public posX = 0;
@@ -81,11 +82,11 @@ export class Wall {
         }
     }
 
-    public draw(ctx: CanvasRenderingContext2D, cam: Camera): void {
+    public draw(ctx: CanvasRenderingContext2D, cam: Camera, debug = false): void {
         this.minPosYVisible = cam.viewport_to_world_y_pixel(0);
         this.maxPosYVisible = cam.viewport_to_world_y_pixel(cam.canvas.height);
 
-        // compute which segments are visible
+        // compute which segments are visible (also drives how far update() grows the face)
         while (
             this.minWallSegmentIndexVisible > 0 &&
             this.wallSegments[this.minWallSegmentIndexVisible]!.posY < this.maxPosYVisible
@@ -99,7 +100,6 @@ export class Wall {
             this.maxWallSegmentIndexVisible++;
         }
 
-        // render only visible elements
         for (let n = this.minWallSegmentIndexVisible; n <= this.maxWallSegmentIndexVisible; n++) {
             const ws0 = this.wallSegments[n + 0];
             const ws1 = this.wallSegments[n + 1];
@@ -116,11 +116,21 @@ export class Wall {
                 this.maxWallSegmentIndexVisible--;
                 continue;
             }
-
-            drawDebugLineWall(ctx, cam, ws0.posX, ws0.posY, ws1.posX, ws1.posY, "#303335");
         }
 
-        drawDebugWallAnchors(ctx, cam, this.wallAnchors, "#FF0000");
+        drawRockFace(ctx, cam, this);
+
+        if (debug) {
+            for (let n = this.minWallSegmentIndexVisible; n <= this.maxWallSegmentIndexVisible; n++) {
+                const ws0 = this.wallSegments[n + 0];
+                const ws1 = this.wallSegments[n + 1];
+                if (ws0 === undefined || ws1 === undefined) {
+                    continue;
+                }
+                drawDebugLineWall(ctx, cam, ws0.posX, ws0.posY, ws1.posX, ws1.posY, "#303335");
+            }
+            drawDebugWallAnchors(ctx, cam, this.wallAnchors, "#FF0000");
+        }
     }
 
     public addSegment(posX: number, posY: number): void {

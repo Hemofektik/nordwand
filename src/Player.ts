@@ -3,6 +3,7 @@ import { ClimbingAI } from "./ClimbingAI.ts";
 import { EGameState } from "./Core.ts";
 import { Exhaustion } from "./Exhaustion.ts";
 import type { SpringPhysics } from "./Physics.ts";
+import { drawPixelClimber } from "./pixelClimber.ts";
 import { Rope } from "./Rope.ts";
 import { Skeleton } from "./Skeleton.ts";
 import type { Wall } from "./Wall.ts";
@@ -33,9 +34,12 @@ export class Player {
         this.posY = pelvis.posY;
     }
 
-    public draw(ctx: CanvasRenderingContext2D, cam: Camera): void {
+    public draw(ctx: CanvasRenderingContext2D, cam: Camera, debug: boolean): void {
         this.rope.draw(ctx, cam);
-        this.skeleton.draw(ctx, cam);
+        drawPixelClimber(ctx, cam, this.skeleton);
+        if (debug) {
+            this.skeleton.draw(ctx, cam);
+        }
         this.ai?.draw(ctx, cam);
         this.exhaustion.draw(ctx, cam);
     }

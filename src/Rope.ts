@@ -16,6 +16,7 @@ function drawPixelLine(
     x1: number,
     y1: number,
     invPixelScale: number,
+    screenOffsetX = 0,
 ): void {
     const dx = Math.abs(x1 - x0);
     const dy = -Math.abs(y1 - y0);
@@ -31,7 +32,7 @@ function drawPixelLine(
         const screenPosX = Math.round(cam.world_to_viewport_x_pixel(currentX) * invPixelScale) * cam.pixelScale;
         const screenPosY = Math.round(cam.world_to_viewport_y_pixel(currentY) * invPixelScale) * cam.pixelScale;
 
-        ctx.rect(screenPosX, screenPosY, cam.pixelScale, cam.pixelScale);
+        ctx.rect(screenPosX + screenOffsetX, screenPosY, cam.pixelScale, cam.pixelScale);
 
         e2 = 2 * err;
         if (e2 > dy) {
@@ -102,24 +103,31 @@ export class Rope {
     public draw(ctx: CanvasRenderingContext2D, cam: Camera): void {
         const invPixelScale = 1.0 / cam.pixelScale;
 
-        beginDrawPixelLine(ctx, "#2A0D03");
-        for (const constraintIndex of this.distanceConstraintIndices) {
-            const c = this.phys.distanceConstraints[constraintIndex]!;
+        const plot = (color: string, screenOffsetX: number): void => {
+            beginDrawPixelLine(ctx, color);
+            for (const constraintIndex of this.distanceConstraintIndices) {
+                const c = this.phys.distanceConstraints[constraintIndex]!;
 
-            const state0 = this.phys.particleStates[c.particleIndex0]!;
-            const state1 = this.phys.particleStates[c.particleIndex1]!;
+                const state0 = this.phys.particleStates[c.particleIndex0]!;
+                const state1 = this.phys.particleStates[c.particleIndex1]!;
 
-            drawPixelLine(
-                ctx,
-                cam,
-                Math.round(state0.posX),
-                Math.round(state0.posY),
-                Math.round(state1.posX),
-                Math.round(state1.posY),
-                invPixelScale,
-            );
-        }
-        endDrawPixelLine(ctx);
+                drawPixelLine(
+                    ctx,
+                    cam,
+                    Math.round(state0.posX),
+                    Math.round(state0.posY),
+                    Math.round(state1.posX),
+                    Math.round(state1.posY),
+                    invPixelScale,
+                    screenOffsetX,
+                );
+            }
+            endDrawPixelLine(ctx);
+        };
+
+        // Light strand with a 1-pixel shadow so the rope reads on both the sky and the rock.
+        plot("#1a120e", cam.pixelScale);
+        plot("#efe6d6", 0);
     }
 
     public lengthenEnd(): void {
