@@ -1,19 +1,24 @@
 import type { Camera } from "./Camera.ts";
 import type { Wall } from "./Wall.ts";
+import { ROCK_PATCHES, rockPatchPixels } from "./rockPatches.ts";
 
 /**
  * World-locked rock, baked once per chunk.
  *
- * Several materials (stratified slab, lumpy boulder, speckled granite,
- * fissures, moss) are chosen by a domain-warped cell mask. Cell borders are
- * hard Bayer dither, not blended antialiasing. Chunks are cached canvases
- * keyed by the wall seed, so scrolling only copies pixels and shades the lip.
- * The silhouette is a visual offset from `wallXAtY`. Collision is unchanged.
- * Nothing here calls the wall RNG.
+ * The face is a seeded collage of stencils cut from the mockup
+ * (`public/sprites/rock`, mirrored by `rockPatches.ts`) plus a lumpy
+ * patch remapped from `tex_fels_01`. Cells are smaller than a stencil,
+ * so a window never wraps a non-seamless crop. Borders cross-fade with
+ * an ordered dither, and each cell is flipped and shifted from the seed.
+ * Chunks cache that collage. Edge darkening is applied while copying a
+ * chunk, from the silhouette normal, so it follows the real wall.
+ * Collision stays on `wallXAtY`. Nothing here calls the wall RNG.
  */
 
 const CHUNK = 64;
-const CELL = 34;
+const CELL = 32;
+const BLEND = 8;
+const SHADE_REACH = 9;
 
 const PALETTE: ReadonlyArray<readonly [number, number, number]> = [
     [32, 31, 26],
@@ -32,22 +37,24 @@ const PALETTE: ReadonlyArray<readonly [number, number, number]> = [
     [122, 162, 58],
 ];
 
-const SHADOW: readonly [number, number, number] = [28, 27, 22];
-const RIM: readonly [number, number, number] = [130, 124, 104];
 const MOSS = 12;
 const MOSS_HI = 13;
 
+/** 8×8 ordered dither, values 0..63. */
 const BAYER: ReadonlyArray<ReadonlyArray<number>> = [
-    [0, 8, 2, 10],
-    [12, 4, 14, 6],
-    [3, 11, 1, 9],
-    [15, 7, 13, 5],
+    [0, 32, 8, 40, 2, 34, 10, 42],
+    [48, 16, 56, 24, 50, 18, 58, 26],
+    [12, 44, 4, 36, 14, 46, 6, 38],
+    [60, 28, 52, 20, 62, 30, 54, 22],
+    [3, 35, 11, 43, 1, 33, 9, 41],
+    [51, 19, 59, 27, 49, 17, 57, 25],
+    [15, 47, 7, 39, 13, 45, 5, 37],
+    [63, 31, 55, 23, 61, 29, 53, 21],
 ];
 
 interface RockChunk {
     canvas: HTMLCanvasElement;
     indices: Uint8Array;
-    rgba: Uint8ClampedArray;
 }
 
 const chunks = new Map<string, RockChunk>();
@@ -58,123 +65,15 @@ function hash3(x: number, y: number, s: number): number {
     return (n ^ (n >>> 16)) >>> 0;
 }
 
-function clampIndex(idx: number, max = 11): number {
-    if (idx < 0) {
-        return 0;
-    }
-    if (idx > max) {
-        return max;
-    }
-    return idx;
+interface Stamp {
+    patch: number;
+    flipX: boolean;
+    flipY: boolean;
+    ox: number;
+    oy: number;
 }
 
-function slab(x: number, y: number, seed: number): number {
-    const col = Math.floor(x / 3);
-    const ridge = (hash3(col, seed, 17) % 5) - 2;
-    const band = Math.floor((y + Math.floor(x / 17)) / 5);
-    const stratum = (hash3(band, seed, 29) % 5) - 2;
-    let idx = 7 + ridge + stratum;
-    const speck = hash3(x, y, seed) % 13;
-    if (speck === 0) {
-        idx -= 3;
-    } else if (speck === 1) {
-        idx += 2;
-    } else if (speck < 4) {
-        idx -= 1;
-    }
-    if (hash3(col, 3, seed) % 8 === 0) {
-        idx -= 2;
-    }
-    return clampIndex(idx);
-}
-
-function boulder(x: number, y: number, seed: number): number {
-    const cell = 10;
-    const cx = Math.floor(x / cell);
-    const cy = Math.floor(y / cell);
-    let best = 1e9;
-    let second = 1e9;
-    for (let oy = -1; oy <= 1; oy++) {
-        for (let ox = -1; ox <= 1; ox++) {
-            const h = hash3(cx + ox, cy + oy, seed + 4);
-            const fx = (cx + ox) * cell + (h % cell);
-            const fy = (cy + oy) * cell + ((h >>> 8) % cell);
-            const dx = x - fx;
-            const dy = y - fy;
-            const d = dx * dx + dy * dy;
-            if (d < best) {
-                second = best;
-                best = d;
-            } else if (d < second) {
-                second = d;
-            }
-        }
-    }
-    const crevice = Math.sqrt(second) - Math.sqrt(best);
-    if (crevice < 1.35) {
-        return 2;
-    }
-    const lump = Math.sqrt(best);
-    if (lump < 2.1) {
-        return 10;
-    }
-    if (lump < 3.6) {
-        return 8;
-    }
-    return 6;
-}
-
-function granite(x: number, y: number, seed: number): number {
-    const n = hash3(x, y, seed + 9);
-    let idx = 5 + (n % 4);
-    if (n % 17 === 0) {
-        idx = 11;
-    } else if (n % 19 === 0) {
-        idx = 2;
-    }
-    if (hash3(Math.floor(x / 2), seed, 2) % 7 === 0) {
-        idx -= 1;
-    }
-    return clampIndex(idx);
-}
-
-function cracks(x: number, y: number, seed: number): number {
-    const base = slab(x, y, seed);
-    const col = Math.floor(x / 15);
-    const h = hash3(col, seed, 77);
-    if (h % 3 !== 0) {
-        return base;
-    }
-    const jag = (hash3(y, seed + col, 6) % 5) - 2;
-    const crackX = col * 15 + 7 + jag;
-    const dist = Math.abs(x - crackX);
-    if (dist === 0) {
-        return 1;
-    }
-    if (dist === 1 && (y & 1) === 0) {
-        return 3;
-    }
-    if (y % 20 === h % 5 && dist < 7) {
-        return 2;
-    }
-    return base;
-}
-
-function mossy(x: number, y: number, seed: number): number {
-    const base = slab(x, y, seed + 2);
-    const n = hash3(Math.floor(x / 2), Math.floor(y / 2), seed + 15);
-    if (n % 5 === 0) {
-        return MOSS_HI;
-    }
-    if (n % 5 === 1 || n % 5 === 2) {
-        return MOSS;
-    }
-    return base;
-}
-
-const MATERIALS = [slab, boulder, granite, cracks, mossy];
-
-function materialId(cx: number, cy: number, seed: number): number {
+function patchChoice(cx: number, cy: number, seed: number): number {
     const h = hash3(cx, cy, seed + 100) % 10;
     if (h < 3) {
         return 0;
@@ -185,51 +84,98 @@ function materialId(cx: number, cy: number, seed: number): number {
     if (h < 7) {
         return 2;
     }
-    if (h < 9) {
+    if (h < 8) {
         return 3;
     }
-    return 4;
+    if (h < 9) {
+        return 4;
+    }
+    return 5;
 }
 
-/** Palette index at a world pixel. Pure: same seed and coordinate, same rock. */
+function stampAt(cx: number, cy: number, seed: number): Stamp {
+    const patch = patchChoice(cx, cy, seed);
+    const spec = ROCK_PATCHES[patch];
+    const width = spec?.width ?? CELL;
+    const height = spec?.height ?? CELL;
+    const h = hash3(cx + 3, cy + 1, seed + 17);
+    const h2 = hash3(cx + 9, cy + 5, seed + 29);
+    const slackX = width - CELL;
+    const slackY = height - CELL;
+    return {
+        patch,
+        flipX: (h & 1) === 1,
+        flipY: (h2 & 1) === 1,
+        ox: slackX > 0 ? h % (slackX + 1) : 0,
+        oy: slackY > 0 ? h2 % (slackY + 1) : 0,
+    };
+}
+
+function sampleStamp(stamp: Stamp, localX: number, localY: number): number {
+    const patch = ROCK_PATCHES[stamp.patch];
+    if (patch === undefined) {
+        return 8;
+    }
+    const pixels = rockPatchPixels(stamp.patch);
+    let x = stamp.ox + localX;
+    let y = stamp.oy + localY;
+    if (stamp.flipX) {
+        x = stamp.ox + (CELL - 1) - localX;
+    }
+    if (stamp.flipY) {
+        y = stamp.oy + (CELL - 1) - localY;
+    }
+    if (x < 0) {
+        x = 0;
+    } else if (x >= patch.width) {
+        x = patch.width - 1;
+    }
+    if (y < 0) {
+        y = 0;
+    } else if (y >= patch.height) {
+        y = patch.height - 1;
+    }
+    return pixels[y * patch.width + x] ?? 8;
+}
+
+/**
+ * Palette index at a world pixel. Pure: same seed and coordinate, same rock.
+ * Stencil windows stay inside each patch. The blend band is an ordered dither
+ * between this cell and the nearest neighbour, so a crop does not have to tile.
+ */
 export function rockIndexAt(x: number, y: number, seed: number): number {
     const ix = Math.floor(x);
     const iy = Math.floor(y);
-    const nx = Math.floor(ix / 8);
-    const ny = Math.floor(iy / 8);
-    const ox = (hash3(nx, ny, seed) % 13) - 6;
-    const oy = (hash3(nx + 3, ny + 1, seed) % 13) - 6;
-    const wx = ix + ox;
-    const wy = iy + oy;
-    const cx = Math.floor(wx / CELL);
-    const cy = Math.floor(wy / CELL);
-    const fx = wx - cx * CELL;
-    const fy = wy - cy * CELL;
-    const border = Math.min(fx, CELL - fx, fy, CELL - fy);
-    const here = materialId(cx, cy, seed);
-    let id = here;
-    if (border < 5) {
+    const cx = Math.floor(ix / CELL);
+    const cy = Math.floor(iy / CELL);
+    const fx = ix - cx * CELL;
+    const fy = iy - cy * CELL;
+    const here = stampAt(cx, cy, seed);
+    let index = sampleStamp(here, fx, fy);
+    const border = Math.min(fx, fy, CELL - 1 - fx, CELL - 1 - fy);
+    if (border < BLEND) {
         let nbx = cx;
         let nby = cy;
         if (fx <= border) {
             nbx = cx - 1;
-        } else if (CELL - fx <= border) {
+        } else if (CELL - 1 - fx <= border) {
             nbx = cx + 1;
         } else if (fy <= border) {
             nby = cy - 1;
         } else {
             nby = cy + 1;
         }
-        const other = materialId(nbx, nby, seed);
-        if (other !== here) {
-            const t = (5 - border) / 5;
-            const bayer = BAYER[iy & 3]![ix & 3]!;
-            if (bayer < t * 16) {
-                id = other;
+        const other = stampAt(nbx, nby, seed);
+        const otherIndex = sampleStamp(other, ix - nbx * CELL, iy - nby * CELL);
+        if (otherIndex !== index) {
+            const t = (BLEND - border) / BLEND;
+            const bayer = BAYER[iy & 7]![ix & 7]!;
+            if (bayer < t * 64) {
+                index = otherIndex;
             }
         }
     }
-    return MATERIALS[id]!(ix, iy, seed);
+    return index;
 }
 
 function bakeChunk(seed: number, cx: number, cy: number): RockChunk {
@@ -250,7 +196,7 @@ function bakeChunk(seed: number, cx: number, cy: number): RockChunk {
         for (let x = 0; x < CHUNK; x++) {
             const idx = rockIndexAt(x0 + x, y0 + y, seed);
             indices[y * CHUNK + x] = idx;
-            const rgb = PALETTE[idx]!;
+            const rgb = PALETTE[idx] ?? PALETTE[8]!;
             const i = (y * CHUNK + x) * 4;
             rgba[i] = rgb[0]!;
             rgba[i + 1] = rgb[1]!;
@@ -259,7 +205,7 @@ function bakeChunk(seed: number, cx: number, cy: number): RockChunk {
         }
     }
     ctx.putImageData(image, 0, 0);
-    return { canvas, indices, rgba };
+    return { canvas, indices };
 }
 
 function getChunk(seed: number, cx: number, cy: number): RockChunk {
@@ -291,16 +237,84 @@ export function rockSilhouetteOffset(worldY: number, seed: number): number {
     return overhang + mid * 0.55 + fine * 0.4;
 }
 
-function mix(
-    a: readonly [number, number, number],
-    b: readonly [number, number, number],
-    t: number,
-): readonly [number, number, number] {
-    return [
-        Math.round(a[0] + (b[0] - a[0]) * t),
-        Math.round(a[1] + (b[1] - a[1]) * t),
-        Math.round(a[2] + (b[2] - a[2]) * t),
-    ];
+/**
+ * How many palette steps to darken a rock pixel.
+ *
+ * `slope` is d(edgeX)/d(y) of the drawn silhouette (world +y is down, rock is
+ * +x of the edge). The outward normal is (-1, slope). Light comes from the
+ * upper left. A downward-facing normal (overhang underside, shaded side of a
+ * lump) darkens more; an upward-facing normal stays closer to the stencil.
+ * The amount falls off over `SHADE_REACH` pixels and the fractional step is
+ * ordered-dithered so the ramp stays on the palette.
+ */
+export function rockEdgeShade(depth: number, slope: number, x: number, y: number): number {
+    if (!(depth >= 0) || depth >= SHADE_REACH) {
+        return 0;
+    }
+    const ny = slope < -1.6 ? -1.6 : slope > 1.6 ? 1.6 : slope;
+    const len = Math.hypot(-1, ny);
+    const down = Math.max(0, ny / len);
+    const up = Math.max(0, -ny / len);
+    const t = 1 - depth / SHADE_REACH;
+    const fall = t * t * (3 - 2 * t);
+    const darkness = fall * (0.3 + 0.95 * down - 0.22 * up);
+    const steps = darkness * 4;
+    const bayer = BAYER[y & 7]![x & 7]! / 64;
+    let quant = Math.floor(steps + bayer);
+    if (quant < 0) {
+        quant = 0;
+    } else if (quant > 4) {
+        quant = 4;
+    }
+    return quant;
+}
+
+/** Step a palette index toward black. Moss drops to the darker moss, then to stone. */
+export function applyRockShade(index: number, steps: number): number {
+    if (steps <= 0) {
+        return index;
+    }
+    if (index >= MOSS) {
+        if (index === MOSS_HI && steps >= 1) {
+            return steps >= 3 ? 8 : MOSS;
+        }
+        if (steps >= 4) {
+            return 6;
+        }
+        return index;
+    }
+    const next = index - steps;
+    return next < 0 ? 0 : next;
+}
+
+function edgeX(wall: Wall, worldY: number, seed: number): number | undefined {
+    const wallX = wall.wallXAtY(worldY);
+    if (wallX === undefined) {
+        return undefined;
+    }
+    return wallX - rockSilhouetteOffset(worldY, seed);
+}
+
+function smoothedEdge(wall: Wall, worldY: number, seed: number): number | undefined {
+    let acc = 0;
+    let n = 0;
+    for (let k = -3; k <= 3; k++) {
+        const edge = edgeX(wall, worldY + k, seed);
+        if (edge !== undefined) {
+            acc += edge;
+            n += 1;
+        }
+    }
+    return n === 0 ? undefined : acc / n;
+}
+
+function surfaceSlope(wall: Wall, worldY: number, seed: number): number {
+    const below = smoothedEdge(wall, worldY + 2, seed);
+    const above = smoothedEdge(wall, worldY - 2, seed);
+    if (below === undefined || above === undefined) {
+        return 0;
+    }
+    return (below - above) / 4;
 }
 
 let rockLayer: HTMLCanvasElement | null = null;
@@ -334,7 +348,7 @@ function write(pixels: Uint8ClampedArray, width: number, height: number, x: numb
     pixels[i + 3] = 255;
 }
 
-/** Copy cached chunks into the frame and shade the lip to match the silhouette. */
+/** Copy cached chunks into the frame and darken the lip from the silhouette normal. */
 export function drawRockFace(ctx: CanvasRenderingContext2D, cam: Camera, wall: Wall): void {
     const width = cam.canvas.width;
     const height = cam.canvas.height;
@@ -364,7 +378,7 @@ export function drawRockFace(ctx: CanvasRenderingContext2D, cam: Camera, wall: W
         const offsetUp = rockSilhouetteOffset(yFloor - 1, seed);
         const shelf = offset + 1.3 < offsetDown;
         const cap = offset > offsetUp + 1.3 && offset > 6;
-        const underLip = offset > rockSilhouetteOffset(yFloor + 4, seed) + 3.5;
+        const slope = surfaceSlope(wall, worldY, seed);
 
         if (shelf || cap) {
             const blades = 1 + (hash3(Math.floor(edgeWorld), yFloor, seed) % 3);
@@ -394,22 +408,20 @@ export function drawRockFace(ctx: CanvasRenderingContext2D, cam: Camera, wall: W
                 active = getChunk(seed, cx, cy);
                 activeCx = cx;
             }
-            const chunk = active!;
+            const chunk = active;
+            if (chunk === undefined) {
+                continue;
+            }
             const lx = wx - cx * CHUNK;
             const ly = wy - cy * CHUNK;
-            const idx = chunk.indices[ly * CHUNK + lx]!;
-            const src = PALETTE[idx]!;
-            let rgb: readonly [number, number, number] = src;
+            let idx = chunk.indices[ly * CHUNK + lx] ?? 8;
             if ((shelf && depth < 5) || (cap && depth < 3)) {
-                rgb = hash3(wx, wy, seed) % 3 === 0 ? PALETTE[MOSS_HI]! : PALETTE[MOSS]!;
-            } else if (underLip && depth < 8) {
-                rgb = mix(src, SHADOW, depth < 2 ? 0.55 : 0.32);
-            } else if (depth < 1) {
-                rgb = mix(src, RIM, 0.4);
-            } else if (depth < 3) {
-                rgb = mix(src, SHADOW, 0.24);
+                idx = hash3(wx, wy, seed) % 3 === 0 ? MOSS_HI : MOSS;
             }
-            write(pixels, width, height, x, y, rgb);
+            if (depth < SHADE_REACH) {
+                idx = applyRockShade(idx, rockEdgeShade(depth, slope, wx, wy));
+            }
+            write(pixels, width, height, x, y, PALETTE[idx] ?? PALETTE[8]!);
         }
     }
 

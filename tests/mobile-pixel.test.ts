@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { cloudInstance } from "../src/cloudSprites.ts";
+import { CLOUDS_PER_BAND, cloudInstance, cloudSpriteCount, cloudSpriteInfo } from "../src/cloudSprites.ts";
 import { climberSilhouetteReport, rasterClimber, STUDY_POSES } from "../src/pixelClimber.ts";
-import { rockIndexAt } from "../src/rockTexture.ts";
+import { ROCK_PATCHES, rockPatchPixels } from "../src/rockPatches.ts";
+import { applyRockShade, rockEdgeShade, rockIndexAt } from "../src/rockTexture.ts";
 import { Wall } from "../src/Wall.ts";
 import { wrapTextureCoord } from "../src/pixelDraw.ts";
 import { clientToLogical, computePixelViewport } from "../src/pixelViewport.ts";
@@ -128,18 +129,70 @@ describe("seeded wall", () => {
 describe("rock composite", () => {
     it("is deterministic, varied, and follows the wall seed", () => {
         expect(rockIndexAt(12, 40, 12345)).toBe(rockIndexAt(12, 40, 12345));
+        expect(rockIndexAt(-4, -9, 12345)).toBe(rockIndexAt(-4, -9, 12345));
         const colors = new Set<number>();
         let differs = false;
-        for (let i = 0; i < 48; i++) {
-            const a = rockIndexAt(i * 3, i * 7, 12345);
-            const b = rockIndexAt(i * 3, i * 7, 99);
-            colors.add(a);
-            if (a !== b) {
-                differs = true;
+        let moss = 0;
+        for (let y = 0; y < 160; y += 3) {
+            for (let x = 0; x < 160; x += 3) {
+                const a = rockIndexAt(x, y, 12345);
+                const b = rockIndexAt(x, y, 99);
+                expect(a).toBeGreaterThanOrEqual(0);
+                expect(a).toBeLessThanOrEqual(13);
+                colors.add(a);
+                if (a !== b) {
+                    differs = true;
+                }
+                if (a >= 12) {
+                    moss += 1;
+                }
             }
         }
         expect(colors.size).toBeGreaterThan(4);
         expect(differs).toBe(true);
+        expect(moss).toBeGreaterThan(0);
+    });
+
+    it("keeps stone stencils free of moss and the moss stencil mossy", () => {
+        for (const patch of ROCK_PATCHES) {
+            const index = ROCK_PATCHES.indexOf(patch);
+            const pixels = rockPatchPixels(index);
+            expect(pixels.length).toBe(patch.width * patch.height);
+            if (patch.name === "rock_moss") {
+                expect(pixels.some((value) => value >= 12)).toBe(true);
+            } else {
+                expect(pixels.every((value) => value < 12)).toBe(true);
+            }
+        }
+    });
+});
+
+describe("rock edge shade", () => {
+    it("darkens faces turned away from the light and dithers the ramp", () => {
+        const overhang = rockEdgeShade(0, 1.2, 0, 0);
+        const vertical = rockEdgeShade(0, 0, 0, 0);
+        const lit = rockEdgeShade(0, -1.2, 0, 0);
+        expect(overhang).toBeGreaterThan(vertical);
+        expect(vertical).toBeGreaterThan(lit);
+        expect(vertical).toBeGreaterThanOrEqual(1);
+        expect(overhang).toBeGreaterThan(rockEdgeShade(8, 1.2, 0, 0));
+        expect(rockEdgeShade(9, 1.2, 4, 4)).toBe(0);
+        expect(rockEdgeShade(0, 1.2, 3, 5)).toBe(rockEdgeShade(0, 1.2, 3, 5));
+        const steps = new Set<number>();
+        for (let y = 0; y < 8; y++) {
+            for (let x = 0; x < 8; x++) {
+                const shade = rockEdgeShade(0, 0, x, y);
+                expect(Number.isInteger(shade)).toBe(true);
+                expect(shade).toBeGreaterThanOrEqual(0);
+                expect(shade).toBeLessThanOrEqual(4);
+                steps.add(shade);
+            }
+        }
+        expect(steps.size).toBeGreaterThan(1);
+        expect(applyRockShade(10, 3)).toBe(7);
+        expect(applyRockShade(1, 4)).toBe(0);
+        expect(applyRockShade(13, 1)).toBe(12);
+        expect(applyRockShade(13, 3)).toBe(8);
     });
 });
 
@@ -147,14 +200,30 @@ describe("cloud sprites", () => {
     it("repeats a layout from the seed and scales by whole pixels only", () => {
         expect(cloudInstance(12345, 4, 0)).toEqual(cloudInstance(12345, 4, 0));
         const seen = new Set<number>();
-        for (let i = 0; i < 6; i++) {
-            const cloud = cloudInstance(12345, 2, i);
-            expect(cloud.scale === 1 || cloud.scale === 2).toBe(true);
-            expect(cloud.sprite).toBeGreaterThanOrEqual(0);
-            expect(cloud.sprite).toBeLessThan(6);
-            seen.add(cloud.drift);
+        const tiers = new Set<string>();
+        let widest = 0;
+        for (let band = 0; band < 12; band++) {
+            for (let i = 0; i < CLOUDS_PER_BAND; i++) {
+                const cloud = cloudInstance(12345, band, i);
+                const info = cloudSpriteInfo(cloud.sprite);
+                expect(cloud.scale === 1 || cloud.scale === 2).toBe(true);
+                expect(cloud.sprite).toBeGreaterThanOrEqual(0);
+                expect(cloud.sprite).toBeLessThan(cloudSpriteCount());
+                if (info.tier === "large") {
+                    expect(cloud.scale).toBe(1);
+                    expect(info.width).toBeGreaterThanOrEqual(80);
+                    expect(info.parallax).toBeGreaterThan(cloudSpriteInfo(0).parallax);
+                }
+                tiers.add(info.tier);
+                widest = Math.max(widest, info.width);
+                seen.add(cloud.drift);
+            }
         }
         expect(seen.size).toBeGreaterThan(1);
+        expect(tiers.has("large")).toBe(true);
+        expect(tiers.has("medium")).toBe(true);
+        expect(tiers.has("small")).toBe(true);
+        expect(widest).toBeGreaterThanOrEqual(120);
     });
 });
 
