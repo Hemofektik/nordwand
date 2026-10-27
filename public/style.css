@@ -37,8 +37,9 @@ canvas {
 #altimeter {
     position: absolute;
     left: calc(10px + env(safe-area-inset-left));
-    top: calc(10px + env(safe-area-inset-top));
+    top: calc(8px + env(safe-area-inset-top));
     z-index: 4;
+    max-width: calc(100% - 188px - env(safe-area-inset-left) - env(safe-area-inset-right));
     pointer-events: none;
     font-size: 13px;
     letter-spacing: 0.08em;
@@ -48,10 +49,10 @@ canvas {
 
 #songinfo {
     position: absolute;
-    top: calc(36px + env(safe-area-inset-top));
+    top: calc(28px + env(safe-area-inset-top));
     left: calc(10px + env(safe-area-inset-left));
     z-index: 4;
-    max-width: 46vw;
+    max-width: calc(100% - 210px - env(safe-area-inset-left) - env(safe-area-inset-right));
     pointer-events: none;
     font-size: 11px;
     line-height: 1.3;
@@ -76,6 +77,7 @@ ul#controls {
 ul#controls li {
     width: 44px;
     height: 44px;
+    flex: 0 0 44px;
     cursor: pointer;
     background-repeat: no-repeat;
     background-position: center;
@@ -83,6 +85,15 @@ ul#controls li {
     image-rendering: pixelated;
     opacity: 0.85;
     touch-action: manipulation;
+}
+
+@media (max-width: 520px), (max-height: 420px) {
+    ul#controls li {
+        width: 36px;
+        height: 36px;
+        flex-basis: 36px;
+        background-size: 20px 20px;
+    }
 }
 
 ul#controls #newlevel { background-image: url(assets/control-random.png); }
@@ -124,9 +135,11 @@ ul#controls li label {
     position: absolute;
     z-index: 8;
     left: 50%;
-    bottom: calc(128px + env(safe-area-inset-bottom));
-    transform: translateX(-50%);
-    width: min(360px, calc(100% - 24px));
+    top: 42%;
+    transform: translate(-50%, -50%);
+    width: min(360px, calc(100% - 24px - env(safe-area-inset-left) - env(safe-area-inset-right)));
+    max-height: 46%;
+    overflow: auto;
     background: rgba(0, 0, 0, 0.78);
     border: 2px solid #222;
     padding: 16px 12px;
@@ -143,9 +156,11 @@ ul#controls li label {
     left: 0;
     right: 0;
     bottom: 0;
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
     gap: 6px;
-    align-items: stretch;
+    max-height: 46%;
     padding: 6px;
     padding-bottom: calc(6px + env(safe-area-inset-bottom));
     padding-left: calc(6px + env(safe-area-inset-left));
@@ -155,22 +170,33 @@ ul#controls li label {
     background: transparent;
 }
 
-/* Wide windows keep the picture clear; the keyboard still leans and climbs.
-   A coarse pointer (phone, tablet) and any real touch bring the pad back. */
-@media (min-width: 900px) {
+/* Wide fine-pointer windows keep the picture clear. The keyboard still
+   leans and climbs. A coarse pointer, or any real touch, brings the pad back.
+   1100px matches TOUCH_HUD_MAX_CSS_WIDTH in pixelViewport.ts. */
+@media (min-width: 1100px) {
     #touch-hud { display: none; }
 }
 
 @media (pointer: coarse) {
-    #touch-hud { display: flex; }
+    #touch-hud { display: grid; }
 }
 
-html.touch-input #touch-hud { display: flex; }
+html.touch-input #touch-hud { display: grid; }
+
+#lean, #touch-actions {
+    height: clamp(48px, 22vh, 96px);
+    min-height: 0;
+    max-height: 100%;
+}
+
+@media (max-height: 420px) {
+    #lean, #touch-actions { height: clamp(40px, 28vh, 64px); }
+    .pad-caption, .pad-side { display: none; }
+    #lean-knob { top: 6px; bottom: 6px; }
+}
 
 #lean {
     position: relative;
-    flex: 1;
-    min-height: 52px;
     background: rgba(14, 18, 22, 0.32);
     border: 2px solid rgba(239, 232, 220, 0.42);
     touch-action: none;
@@ -209,7 +235,7 @@ html.touch-input #touch-hud { display: flex; }
     top: 14px;
     bottom: 14px;
     width: 16px;
-    left: calc(50% - 10px);
+    left: calc(50% - 8px);
     background: rgba(239, 232, 220, 0.78);
     border: 2px solid rgba(26, 18, 14, 0.55);
     pointer-events: none;
@@ -218,8 +244,8 @@ html.touch-input #touch-hud { display: flex; }
 #touch-actions {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    width: 76px;
+    gap: 4px;
+    width: clamp(64px, 18vw, 96px);
     pointer-events: auto;
 }
 
@@ -235,16 +261,19 @@ html.touch-input #touch-hud { display: flex; }
 }
 
 #letgo {
-    flex: 0 0 26px;
+    flex: 0 0 22px;
+    min-height: 0;
     background: rgba(42, 36, 31, 0.4);
     font-size: 10px;
+    white-space: nowrap;
 }
 
 #climb {
-    flex: 1;
-    min-height: 40px;
+    flex: 1 1 auto;
+    min-height: 0;
     background: rgba(180, 51, 42, 0.48);
     font-size: 12px;
+    white-space: nowrap;
 }
 
 #letgo:active, #climb:active {

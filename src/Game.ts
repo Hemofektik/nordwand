@@ -287,30 +287,7 @@ export class Game {
     }
 
     public mouse_scroll(event: Event): void {
-        let delta = 0;
-
-        const wheelEvent = event as WheelEvent & { wheelDelta?: number; detail?: number };
-
-        // normalize the delta
-        if (wheelEvent.wheelDelta) {
-            // IE and Opera
-            delta = wheelEvent.wheelDelta / 60;
-        } else if (wheelEvent.detail) {
-            // W3C
-            delta = -wheelEvent.detail / 2;
-        } else if (wheelEvent.deltaY) {
-            delta = -wheelEvent.deltaY;
-        }
-        delta = delta / Math.abs(delta);
-
-        if (delta !== 0) {
-            if (delta > 0) {
-                this.cam.scale_target *= 1.2;
-            }
-            if (delta < 0) {
-                this.cam.scale_target /= 1.2;
-            }
-        }
+        event.preventDefault();
     }
 
     public key_up(e: KeyboardEvent): void {
@@ -584,7 +561,7 @@ export class Game {
                 return;
             }
             const t = (this.leanVisual + 1) / 2;
-            knob.style.left = `calc(${t * 100}% - 10px)`;
+            knob.style.left = `calc(${t} * (100% - 16px))`;
         };
         const read = (ev: PointerEvent): void => {
             const rect = pad.getBoundingClientRect();

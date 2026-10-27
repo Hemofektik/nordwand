@@ -1,6 +1,7 @@
 import type { Camera } from "./Camera.ts";
 import type { SpringPhysics } from "./Physics.ts";
 import { snapScreen } from "./pixelDraw.ts";
+import { quantizeEdgeColumn } from "./rockTexture.ts";
 import type { Skeleton } from "./Skeleton.ts";
 import type { Wall, WallAnchor } from "./Wall.ts";
 
@@ -139,8 +140,13 @@ export class Rope {
     private drawPitons(ctx: CanvasRenderingContext2D, cam: Camera): void {
         const s = Math.max(1, cam.pixelScale);
         const seen = new Set<string>();
+        const onEdge = (worldY: number, fallbackX: number): { x: number; y: number } => {
+            const y = Math.round(cam.world_to_viewport_y_pixel(worldY));
+            const wallX = this.wall.wallXAtY(worldY) ?? fallbackX;
+            return { x: quantizeEdgeColumn(cam.world_to_viewport_x_pixel(wallX), y), y };
+        };
         const mark = (worldX: number, worldY: number): void => {
-            const p = snapScreen(cam, worldX, worldY);
+            const p = onEdge(worldY, worldX);
             const key = `${p.x},${p.y}`;
             if (seen.has(key)) {
                 return;
@@ -182,7 +188,7 @@ export class Rope {
                 continue;
             }
             mark(wallX, state.posY);
-            const bolt = snapScreen(cam, wallX, state.posY);
+            const bolt = onEdge(state.posY, wallX);
             const rope = snapScreen(cam, state.posX, state.posY);
             ctx.fillStyle = ROPE;
             const dx = rope.x - bolt.x;

@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import { CLOUDS_PER_BAND, cloudInstance, cloudSpriteCount, cloudSpriteInfo } from "../src/cloudSprites.ts";
 import { climberSilhouetteReport, rasterClimber, STUDY_POSES } from "../src/pixelClimber.ts";
 import { ROCK_PATCHES, rockPatchPixels } from "../src/rockPatches.ts";
-import { applyRockShade, rockEdgeShade, rockIndexAt } from "../src/rockTexture.ts";
+import { applyRockShade, quantizeEdgeColumn, rockEdgeShade, rockIndexAt } from "../src/rockTexture.ts";
 import { Wall } from "../src/Wall.ts";
 import { wrapTextureCoord } from "../src/pixelDraw.ts";
-import { clientToLogical, computePixelViewport } from "../src/pixelViewport.ts";
+import { clientToLogical, computeChromeLayout, computePixelViewport, uniformBlockMismatch } from "../src/pixelViewport.ts";
 import { bowDeltaFromLean, combinedLean, leanFromPointer } from "../src/touchInput.ts";
 
 describe("computePixelViewport", () => {
@@ -18,6 +18,10 @@ describe("computePixelViewport", () => {
         [375, 667, 2],
         [800, 600, 1],
         [320, 568, 2],
+        [844, 390, 3],
+        [768, 1024, 2],
+        [1024, 768, 2],
+        [1280, 800, 1],
     ];
 
     it("scales by a whole number of device pixels and stays near the concept frame", () => {
@@ -51,6 +55,93 @@ describe("computePixelViewport", () => {
         expect(view.scale).toBe(2);
         expect(view.logicalWidth).toBe(720);
         expect(view.logicalHeight).toBe(450);
+    });
+
+    it("picks a whole-pixel frame for phone, tablet, desktop, and narrow windows", () => {
+        expect(computePixelViewport(844, 390, 3)).toMatchObject({ scale: 3, logicalWidth: 844, logicalHeight: 390, offsetX: 0, offsetY: 0 });
+        expect(computePixelViewport(768, 1024, 2)).toMatchObject({ scale: 5, logicalWidth: 307, logicalHeight: 409 });
+        expect(computePixelViewport(1024, 768, 2)).toMatchObject({ scale: 4, logicalWidth: 512, logicalHeight: 384 });
+        expect(computePixelViewport(1280, 800, 1)).toMatchObject({ scale: 2, logicalWidth: 640, logicalHeight: 400, offsetX: 0, offsetY: 0 });
+        expect(computePixelViewport(1920, 1080, 1)).toMatchObject({ scale: 3, logicalWidth: 640, logicalHeight: 360 });
+        expect(computePixelViewport(320, 568, 2)).toMatchObject({ scale: 3, logicalWidth: 213, logicalHeight: 378 });
+    });
+});
+
+describe("computeChromeLayout", () => {
+    it("keeps the pad on short and narrow screens and hides it on a wide desktop", () => {
+        const phone = computeChromeLayout(390, 844);
+        expect(phone).toMatchObject({ showTouchHud: true, padHeight: 96, controlSize: 36, captions: true });
+        expect(phone.actionWidth).toBeCloseTo(390 * 0.18, 5);
+        expect(computeChromeLayout(844, 390)).toMatchObject({ showTouchHud: true, padHeight: 64, actionWidth: 96, controlSize: 36, captions: false });
+        expect(computeChromeLayout(768, 1024)).toMatchObject({ showTouchHud: true, controlSize: 44, captions: true });
+        expect(computeChromeLayout(1024, 768)).toMatchObject({ showTouchHud: true, padHeight: 96, controlSize: 44, captions: true });
+        expect(computeChromeLayout(1280, 800)).toMatchObject({ showTouchHud: false, controlSize: 44, captions: true });
+        expect(computeChromeLayout(1920, 1080)).toMatchObject({ showTouchHud: false, controlSize: 44 });
+        const narrow = computeChromeLayout(320, 568);
+        expect(narrow).toMatchObject({ showTouchHud: true, actionWidth: 64, controlSize: 36, captions: true });
+        expect(narrow.padHeight).toBeLessThanOrEqual(96);
+        expect(narrow.padHeight).toBeGreaterThanOrEqual(48);
+    });
+});
+
+describe("uniformBlockMismatch", () => {
+    function solid(scale: number, logicalWidth: number, logicalHeight: number, offsetX: number, offsetY: number): { pixels: Uint8ClampedArray; width: number; height: number } {
+        const width = offsetX + logicalWidth * scale + 2;
+        const height = offsetY + logicalHeight * scale + 1;
+        const pixels = new Uint8ClampedArray(width * height * 4);
+        for (let y = 0; y < logicalHeight; y++) {
+            for (let x = 0; x < logicalWidth; x++) {
+                const r = (x * 13) & 255;
+                const g = (y * 17) & 255;
+                for (let dy = 0; dy < scale; dy++) {
+                    for (let dx = 0; dx < scale; dx++) {
+                        const i = ((offsetY + y * scale + dy) * width + (offsetX + x * scale + dx)) * 4;
+                        pixels[i] = r;
+                        pixels[i + 1] = g;
+                        pixels[i + 2] = 40;
+                        pixels[i + 3] = 255;
+                    }
+                }
+            }
+        }
+        return { pixels, width, height };
+    }
+
+    it("accepts a nearest-neighbour scale and flags a single broken pixel", () => {
+        for (const scale of [1, 2, 3, 6]) {
+            const frame = solid(scale, 5, 4, scale === 1 ? 0 : 1, 0);
+            expect(uniformBlockMismatch(frame.pixels, frame.width, frame.height, scale, scale === 1 ? 0 : 1, 0, 5, 4)).toBeNull();
+        }
+        const frame = solid(4, 3, 3, 2, 2);
+        frame.pixels[((2 + 4) * frame.width + (2 + 5)) * 4 + 1] = 9;
+        expect(uniformBlockMismatch(frame.pixels, frame.width, frame.height, 4, 2, 2, 3, 3)).toEqual({ x: 7, y: 6 });
+        frame.pixels[0] = 255;
+        expect(uniformBlockMismatch(frame.pixels, frame.width, frame.height, 4, 2, 2, 3, 3)).toEqual({ x: 7, y: 6 });
+    });
+});
+
+describe("quantizeEdgeColumn", () => {
+    it("stays on the collision sample's pixel, dithering only between floor and ceil", () => {
+        const wall = new Wall(150, 200, 12345);
+        const seen = new Set<number>();
+        let samples = 0;
+        for (let row = 0; row < 500; row++) {
+            const wallX = wall.wallXAtY(row);
+            if (wallX === undefined) {
+                continue;
+            }
+            samples += 1;
+            const column = quantizeEdgeColumn(wallX, row);
+            expect(Math.abs(column - wallX)).toBeLessThanOrEqual(1);
+            expect(column === Math.floor(wallX) || column === Math.ceil(wallX)).toBe(true);
+            seen.add(quantizeEdgeColumn(10.5, row));
+        }
+        expect(samples).toBeGreaterThan(20);
+        expect(seen.has(10)).toBe(true);
+        expect(seen.has(11)).toBe(true);
+        expect(quantizeEdgeColumn(4, 3)).toBe(4);
+        expect(quantizeEdgeColumn(-1.2, 1)).toBeGreaterThanOrEqual(-2);
+        expect(quantizeEdgeColumn(-1.2, 1)).toBeLessThanOrEqual(-1);
     });
 });
 

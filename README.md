@@ -28,7 +28,7 @@ The climber already moves by joint angles (see `concept/adr/0001-angular-only-mo
 | **Let go** | Release every hold. Same as **F**. |
 | Top icons | Pause, new wall, mute, help. |
 
-The lean pad and the two buttons hide on a wide desktop with a mouse, and come back if the window is narrow or a touch is used. Keyboard and the mouse wheel keep working either way.
+The lean pad sits at the bottom left and the buttons at the bottom right. Both hide when the window is at least 1100px wide with a mouse, and come back on a narrower window, a tablet, a coarse pointer, or the first touch. Short and landscape screens shrink the pad so it stays on screen. Keyboard play is the same in every layout. The view does not zoom: one world unit is one logical pixel, and the window picks the integer scale.
 
 | Key | Action |
 | --- | --- |
@@ -42,7 +42,6 @@ The lean pad and the two buttons hide on a wide desktop with a mouse, and come b
 | **D** | Toggle debug. Holding it also leans in, same as the right arrow. |
 | **A** / Left, **Right** | Lean out / lean in |
 | **W**, Up | Climb |
-| Mouse wheel | Zoom |
 
 ## How it feels
 
@@ -96,6 +95,6 @@ npm run build       # typecheck + Vite production build
 
 The image at the top is `concept/nordwand_mockup_04_large.png` — the intended mood of the finished game. Wide sky, layered mountains, a textured wall, and a climber who looks small because the drop is real.
 
-The live view follows that plate. The sky is a flat `#bad4ed`. Distant ridges are `public/sprites/bg_mountains.png`. Clouds are fixed pixel sprites (white, `#e5eaef` underside): small hand-authored puffs plus large and medium banks cut from the mockup, placed from the wall seed, flipped or scaled by a whole number, with the big clouds on a nearer parallax layer. The wall is a cached collage of rock stencils cut from that plate (and a lumpy patch from `tex_fels_01`), dithered into each other from the wall seed and drawn just outside the collision line. The lip darkens from the silhouette normal — overhang undersides more than faces turned toward the light — in palette steps. The climber is filled capsules on the ragdoll, with a one-pixel outline, so a bent limb does not open a gap. The rope is the dark brown `#2a0d03` line, with a metal piton where it meets the rock. The frame is scaled with nearest-neighbour (`image-rendering: pixelated`, smoothing off). **D** still draws the debug bones and the anchor marks. `?poses=1` draws four still poses of the figure.
+The live view follows that plate. The sky is a flat `#bad4ed`. Distant ridges are `public/sprites/bg_mountains.png`. Clouds are fixed pixel sprites (white, `#e5eaef` underside): small hand-authored puffs plus large and medium banks cut from the mockup, placed from the wall seed, flipped or scaled by a whole number, with the big clouds on a nearer parallax layer. The wall is a cached collage of rock stencils cut from that plate (and a lumpy patch from `tex_fels_01`), dithered into each other from the wall seed. Its silhouette is the collision line, sampled once per logical row and snapped to that pixel, so the outline, the lip shading, the ledge moss, and the pitons share the game's pixel grid. The lip darkens from that snapped normal — overhang undersides more than faces turned toward the light — in palette steps. The climber is filled capsules on the ragdoll, with a one-pixel outline, so a bent limb does not open a gap. The rope is the dark brown `#2a0d03` line, with a metal piton on the same snapped edge. Everything is drawn into the logical frame, then scaled once with nearest-neighbour (`image-rendering: pixelated`, smoothing off). **D** still draws the debug bones and the anchor marks. `?poses=1` draws four still poses of the figure.
 
 Music in the original build: *sevenhundredbeats* by Duncan Beattie.

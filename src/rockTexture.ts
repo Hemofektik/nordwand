@@ -10,9 +10,10 @@ import { ROCK_PATCHES, rockPatchPixels } from "./rockPatches.ts";
  * patch remapped from `tex_fels_01`. Cells are smaller than a stencil,
  * so a window never wraps a non-seamless crop. Borders cross-fade with
  * an ordered dither, and each cell is flipped and shifted from the seed.
- * Chunks cache that collage. Edge darkening is applied while copying a
- * chunk, from the silhouette normal, so it follows the real wall.
- * Collision stays on `wallXAtY`. Nothing here calls the wall RNG.
+ * Chunks cache that collage. The silhouette is `wallXAtY` sampled once per
+ * logical row and snapped to that pixel. Lip shading, ledge moss, and the
+ * depth into the rock are measured from those integer columns. Collision
+ * stays on `wallXAtY`. Nothing here calls the wall RNG.
  */
 
 const CHUNK = 64;
@@ -225,16 +226,26 @@ function getChunk(seed: number, cx: number, cy: number): RockChunk {
     return baked;
 }
 
-/** How far the drawn face juts into the sky, in world units. Seeded, not the wall RNG. */
-export function rockSilhouetteOffset(worldY: number, seed: number): number {
-    const y = Math.floor(worldY);
-    const big = Math.floor(y / 48);
-    const bigT = (y - big * 48) / 48;
-    const bigAmp = 4 + (hash3(big, seed, 3) % 12);
-    const overhang = bigAmp * (1 - bigT) * (1 - bigT);
-    const mid = hash3(Math.floor(y / 9), seed, 8) % 5;
-    const fine = hash3(y, seed, 1) % 3;
-    return overhang + mid * 0.55 + fine * 0.4;
+/**
+ * Snap a collision sample to a logical column.
+ *
+ * `screenX` is `wallXAtY` in the same pixel space as the logical frame.
+ * The result is `floor(screenX)` or `ceil(screenX)`, so the drawn edge stays
+ * within one logical pixel of the collision line. The Bayer threshold only
+ * chooses which of those two columns a fractional sample lands on.
+ */
+export function quantizeEdgeColumn(screenX: number, row: number): number {
+    if (!Number.isFinite(screenX)) {
+        return 0;
+    }
+    const base = Math.floor(screenX);
+    const frac = screenX - base;
+    if (frac === 0) {
+        return base;
+    }
+    const rowKey = row < 0 ? -row : row;
+    const threshold = (BAYER[rowKey & 7]![0]! + 0.5) / 64;
+    return frac >= threshold ? base + 1 : base;
 }
 
 /**
@@ -287,30 +298,9 @@ export function applyRockShade(index: number, steps: number): number {
     return next < 0 ? 0 : next;
 }
 
-function edgeX(wall: Wall, worldY: number, seed: number): number | undefined {
-    const wallX = wall.wallXAtY(worldY);
-    if (wallX === undefined) {
-        return undefined;
-    }
-    return wallX - rockSilhouetteOffset(worldY, seed);
-}
-
-function smoothedEdge(wall: Wall, worldY: number, seed: number): number | undefined {
-    let acc = 0;
-    let n = 0;
-    for (let k = -3; k <= 3; k++) {
-        const edge = edgeX(wall, worldY + k, seed);
-        if (edge !== undefined) {
-            acc += edge;
-            n += 1;
-        }
-    }
-    return n === 0 ? undefined : acc / n;
-}
-
-function surfaceSlope(wall: Wall, worldY: number, seed: number): number {
-    const below = smoothedEdge(wall, worldY + 2, seed);
-    const above = smoothedEdge(wall, worldY - 2, seed);
+function columnSlope(columns: ReadonlyArray<number | undefined>, y: number): number {
+    const below = columns[y + 2];
+    const above = columns[y - 2];
     if (below === undefined || above === undefined) {
         return 0;
     }
@@ -363,45 +353,43 @@ export function drawRockFace(ctx: CanvasRenderingContext2D, cam: Camera, wall: W
         frame.data.fill(0);
     }
     const pixels = frame.data;
+    const columns: Array<number | undefined> = new Array(height);
+    const worldRows = new Float64Array(height);
 
     for (let y = 0; y < height; y++) {
         const worldY = cam.viewport_to_world_y_pixel(y + 0.5);
+        worldRows[y] = worldY;
         const wallX = wall.wallXAtY(worldY);
         if (wallX === undefined) {
             continue;
         }
-        const offset = rockSilhouetteOffset(worldY, seed);
-        const edgeWorld = wallX - offset;
-        const edgePx = Math.round(cam.world_to_viewport_x_pixel(edgeWorld));
-        const yFloor = Math.floor(worldY);
-        const offsetDown = rockSilhouetteOffset(yFloor + 1, seed);
-        const offsetUp = rockSilhouetteOffset(yFloor - 1, seed);
-        const shelf = offset + 1.3 < offsetDown;
-        const cap = offset > offsetUp + 1.3 && offset > 6;
-        const slope = surfaceSlope(wall, worldY, seed);
+        columns[y] = quantizeEdgeColumn(cam.world_to_viewport_x_pixel(wallX), y);
+    }
 
-        if (shelf || cap) {
-            const blades = 1 + (hash3(Math.floor(edgeWorld), yFloor, seed) % 3);
-            const moss = hash3(yFloor, seed, 6) % 2 === 0 ? PALETTE[MOSS_HI]! : PALETTE[MOSS]!;
+    for (let y = 0; y < height; y++) {
+        const column = columns[y];
+        const worldY = worldRows[y] ?? 0;
+        if (column === undefined) {
+            continue;
+        }
+        const slope = columnSlope(columns, y);
+        const shelf = slope < -0.35;
+        if (shelf) {
+            const blades = 1 + (hash3(column, y, seed) % 2);
+            const moss = hash3(y, seed, 6) % 2 === 0 ? PALETTE[MOSS_HI]! : PALETTE[MOSS]!;
             for (let b = 1; b <= blades; b++) {
-                write(pixels, width, height, edgePx - b, y, moss);
-            }
-            if (shelf && hash3(yFloor, seed, 11) % 2 === 0) {
-                write(pixels, width, height, edgePx - 1, y - 1, PALETTE[MOSS_HI]!);
+                write(pixels, width, height, column - b, y, moss);
             }
         }
 
-        const x0 = edgePx < 0 ? 0 : edgePx;
+        const x0 = column < 0 ? 0 : column;
         const wy = Math.floor(worldY);
         const cy = Math.floor(wy / CHUNK);
         let activeCx = Number.NaN;
         let active: RockChunk | undefined;
         for (let x = x0; x < width; x++) {
+            const depth = x - column;
             const worldX = cam.viewport_to_world_x_pixel(x + 0.5);
-            const depth = worldX - edgeWorld;
-            if (depth < 0) {
-                continue;
-            }
             const wx = Math.floor(worldX);
             const cx = Math.floor(wx / CHUNK);
             if (cx !== activeCx) {
@@ -415,11 +403,11 @@ export function drawRockFace(ctx: CanvasRenderingContext2D, cam: Camera, wall: W
             const lx = wx - cx * CHUNK;
             const ly = wy - cy * CHUNK;
             let idx = chunk.indices[ly * CHUNK + lx] ?? 8;
-            if ((shelf && depth < 5) || (cap && depth < 3)) {
-                idx = hash3(wx, wy, seed) % 3 === 0 ? MOSS_HI : MOSS;
+            if (shelf && depth < 2) {
+                idx = hash3(wx, wy, seed) % 2 === 0 ? MOSS_HI : MOSS;
             }
             if (depth < SHADE_REACH) {
-                idx = applyRockShade(idx, rockEdgeShade(depth, slope, wx, wy));
+                idx = applyRockShade(idx, rockEdgeShade(depth, slope, x, y));
             }
             write(pixels, width, height, x, y, PALETTE[idx] ?? PALETTE[8]!);
         }

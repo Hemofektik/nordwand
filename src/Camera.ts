@@ -9,14 +9,13 @@ export class Camera {
     public posY = 0;
     public posXTarget = 0;
     public posYTarget = 0;
-    public scale = 2;
-    public scale_target: number;
-    public pixelScale: number;
+    /** World units are logical pixels. The presenter is the only upscale. */
+    public scale = 1;
+    public scale_target = 1;
+    public pixelScale = 1;
 
     public constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
-        this.scale_target = Math.ceil(canvas.height / 500.0);
-        this.pixelScale = this.scale_target;
     }
 
     public world_to_viewport_x_pixel(x: number): number {
@@ -39,33 +38,9 @@ export class Camera {
         this.posXTarget = target_x;
         this.posYTarget = target_y;
 
-        const minScale = 1.0;
-        const maxScale = 10.0;
-
-        if (this.scale_target < minScale) {
-            this.scale_target = minScale;
-        }
-
-        if (this.scale_target > maxScale) {
-            this.scale_target = maxScale;
-        }
-
-        // Gently move to target
-        if (this.scale !== this.scale_target) {
-            this.scale = Math.abs(
-                this.scale + Math.max(1.0, deltaTime * this.scale_smoothness) * (Math.round(this.scale_target) - this.scale),
-            );
-        }
-
-        if (this.scale < minScale) {
-            this.scale = minScale;
-        }
-
-        if (this.scale > maxScale) {
-            this.scale = maxScale;
-        }
-
-        this.pixelScale = Math.round(this.scale);
+        this.scale = 1;
+        this.scale_target = 1;
+        this.pixelScale = 1;
 
         if (this.posX !== this.posXTarget) {
             this.posX += deltaTime * (this.posXTarget - this.posX) * this.move_smoothness;
