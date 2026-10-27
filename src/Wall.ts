@@ -65,6 +65,9 @@ export class Wall {
 
     public segmentDirRad = -Math.PI * 0.5;
 
+    /** Copied for the rock and cloud layout. Generation still uses the noise index. */
+    public seed = 1;
+
     public update(_deltaTime: number): void {
         const lastVisibleWallSegment = this.wallSegments[this.wallSegments.length - 2]!;
         while (lastVisibleWallSegment.posY > this.minPosYVisible) {
@@ -283,6 +286,7 @@ export class Wall {
     private initialize(initialPosX: number, initialPosY: number, wallSeed: number): void {
         const numSegments = 12;
 
+        this.seed = wallSeed;
         SetNoiseIndex(wallSeed);
 
         this.medianX = initialPosX;

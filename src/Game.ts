@@ -4,6 +4,7 @@ import { MusicPlayer } from "./MusicPlayer.ts";
 import { SpringPhysics } from "./Physics.ts";
 import { PixelSprite } from "./PixelSprite.ts";
 import { PixelPresenter } from "./pixelPresenter.ts";
+import { drawClimberStudy } from "./pixelClimber.ts";
 import { drawBirds, drawClouds, drawMountains, drawSky, loadPixelScene } from "./pixelScene.ts";
 import { clientToLogical } from "./pixelViewport.ts";
 import { Player } from "./Player.ts";
@@ -62,6 +63,7 @@ export class Game {
     private leanPointerId: number | null = null;
     private lastTouchClimbAt = 0;
     private viewportKey = "";
+    private readonly poseStudy: boolean;
 
     public constructor(screen: HTMLCanvasElement) {
         this.screen = screen;
@@ -70,6 +72,7 @@ export class Game {
         this.canvas = this.presenter.logical;
         this.ctx = this.presenter.logicalCtx;
         this.cam = new Camera(this.canvas);
+        this.poseStudy = new URLSearchParams(window.location.search).get("poses") === "1";
         loadPixelScene();
         this.music = new MusicPlayer(
             [ // Music tracks (filename, song name, artist)
@@ -414,6 +417,16 @@ export class Game {
         this.applyViewport();
         this.presenter.prepare();
 
+        if (this.poseStudy) {
+            drawClimberStudy(this.ctx);
+            const hud = document.getElementById("touch-hud");
+            if (hud !== null) {
+                hud.style.display = "none";
+            }
+            this.presenter.present();
+            return;
+        }
+
         drawSky(this.ctx);
 
         this.handleInput(this.frame_delta_smoothed);
@@ -449,7 +462,7 @@ export class Game {
         // rendering
         {
             drawMountains(this.ctx, this.cam);
-            drawClouds(this.ctx, this.cam, this.gameTime);
+            drawClouds(this.ctx, this.cam, this.gameTime, this.wall?.seed ?? 1);
             drawBirds(this.ctx, this.gameTime);
             this.wall?.draw(this.ctx, this.cam, this.debug);
             this.updateHudInset();

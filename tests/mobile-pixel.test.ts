@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { cloudInstance } from "../src/cloudSprites.ts";
+import { climberSilhouetteReport, rasterClimber, STUDY_POSES } from "../src/pixelClimber.ts";
+import { rockIndexAt } from "../src/rockTexture.ts";
 import { Wall } from "../src/Wall.ts";
 import { wrapTextureCoord } from "../src/pixelDraw.ts";
 import { clientToLogical, computePixelViewport } from "../src/pixelViewport.ts";
@@ -119,5 +122,49 @@ describe("seeded wall", () => {
             "segments": 12,
           }
         `);
+    });
+});
+
+describe("rock composite", () => {
+    it("is deterministic, varied, and follows the wall seed", () => {
+        expect(rockIndexAt(12, 40, 12345)).toBe(rockIndexAt(12, 40, 12345));
+        const colors = new Set<number>();
+        let differs = false;
+        for (let i = 0; i < 48; i++) {
+            const a = rockIndexAt(i * 3, i * 7, 12345);
+            const b = rockIndexAt(i * 3, i * 7, 99);
+            colors.add(a);
+            if (a !== b) {
+                differs = true;
+            }
+        }
+        expect(colors.size).toBeGreaterThan(4);
+        expect(differs).toBe(true);
+    });
+});
+
+describe("cloud sprites", () => {
+    it("repeats a layout from the seed and scales by whole pixels only", () => {
+        expect(cloudInstance(12345, 4, 0)).toEqual(cloudInstance(12345, 4, 0));
+        const seen = new Set<number>();
+        for (let i = 0; i < 6; i++) {
+            const cloud = cloudInstance(12345, 2, i);
+            expect(cloud.scale === 1 || cloud.scale === 2).toBe(true);
+            expect(cloud.sprite).toBeGreaterThanOrEqual(0);
+            expect(cloud.sprite).toBeLessThan(6);
+            seen.add(cloud.drift);
+        }
+        expect(seen.size).toBeGreaterThan(1);
+    });
+});
+
+describe("climber silhouette", () => {
+    it("stays one piece, with no holes, across extreme poses", () => {
+        for (const pose of STUDY_POSES) {
+            const report = climberSilhouetteReport(rasterClimber(pose));
+            expect(report.body).toBeGreaterThan(40);
+            expect(report.components).toBe(1);
+            expect(report.holes).toBe(0);
+        }
     });
 });
