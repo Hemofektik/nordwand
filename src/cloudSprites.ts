@@ -208,8 +208,7 @@ export function cloudInstance(seed: number, band: number, index: number): CloudI
     let sprite: number;
     let scale: 1 | 2 = 1;
     if (index === 0) {
-        const useLarge = hash3(band, seed, 11) % 3 !== 0;
-        sprite = pick(useLarge ? LARGE_SPRITES : MEDIUM_SPRITES, h);
+        sprite = pick(LARGE_SPRITES, h);
     } else if (index === 1) {
         sprite = pick(MEDIUM_SPRITES, h);
     } else {
@@ -250,11 +249,16 @@ export function drawCloudField(ctx: CanvasRenderingContext2D, cam: Camera, timeS
             const y = Math.round(cloud.y - viewY + bob);
             let x: number;
             if (info.tier === "small") {
-                const sky = Math.max(sprite.width + 4, Math.round(width * 0.8));
+                const sky = Math.max(sprite.width + 4, Math.round(width * 0.68));
                 x = Math.round(cloud.x * Math.max(0, sky - sprite.width) + drift);
             } else {
-                const span = Math.max(8, width - Math.round(sprite.width * 0.45));
-                x = Math.round(cloud.x * span - sprite.width * 0.2 + drift);
+                // Keep the body of a wide cloud in the open sky. The rock owns
+                // the right side of the frame, so a full-width scatter hides
+                // the big banks inside the wall.
+                const skyLimit = Math.round(width * (info.tier === "large" ? 0.5 : 0.6));
+                const minX = -Math.round(sprite.width * 0.32);
+                const maxX = Math.max(minX + 8, skyLimit - Math.round(sprite.width * 0.62));
+                x = Math.round(minX + cloud.x * (maxX - minX) + drift);
             }
             if (x > width || y > height || x + sprite.width < 0 || y + sprite.height < 0) {
                 continue;
