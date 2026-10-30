@@ -2,10 +2,10 @@ import type { Camera } from "./Camera.ts";
 import type { Skeleton } from "./Skeleton.ts";
 
 /**
- * The climber is filled in logical pixels: a capsule per bone and a disc at
- * every joint, the same width as that limb. Shading is a darker version of
- * the cloth, skin, or helmet. There is no separate outline. Nothing is
- * rotated as a sprite, so a sharp elbow cannot open a gap.
+ * The climber is filled in logical pixels. Bone directions come from the
+ * physics joints, but the drawn lengths are the mockup's: about 40 pixels
+ * from helmet to boot, not the ragdoll's 53. A capsule per bone and a disc
+ * at each joint, the same width as that limb. No separate outline.
  */
 
 const PALETTE = [
@@ -26,6 +26,7 @@ const PALETTE = [
     "#995d00",
     "#daffff",
     "#21548f",
+    "#de7947",
 ];
 
 const SHIRT = 2;
@@ -43,31 +44,49 @@ const HELMET = 13;
 const HELMET_DARK = 14;
 const LAMP = 15;
 const EYE = 16;
+const CHEEK = 17;
 
-/** Half-widths in logical pixels. A limb of radius ~1 is about two pixels wide. */
-const ARM = 1.2;
-const THIGH = 1.35;
-const SHIN = 1.2;
-const TORSO = 2.05;
+/**
+ * Drawn lengths, in logical pixels, measured on the mockup plate
+ * (helmet top y=217 to the standing boot y=256, native 640×420).
+ * Physics stays at body 24, arm 20, leg 24.
+ */
+const NECK_LEN = 11;
+const BACK_LEN = 6;
+const HIP_LEN = 4;
+const HEAD_LEN = 4;
+const THIGH_LEN = 8;
+const SHIN_LEN = 8;
+const UPPER_ARM = 7;
+const FOREARM = 6;
+
+/** Half-widths. The painted torso is about five pixels; the limbs two or three. */
+const ARM = 1.05;
+const THIGH = 1.55;
+const SHIN = 1.35;
+const TORSO = 2.35;
 const NECK_R = 1.35;
-const PACK_R = 1.45;
-const HEAD_R = 2.25;
-const HAND_R = 1.2;
-const BOOT_R = 1.25;
+const PACK_R = 1.75;
+const HEAD_R = 2.3;
+const HAND_R = 1.05;
+const BOOT_R = 1.45;
 
 const HEAD: readonly string[] = [
-    ".hHh.",
-    "hHLHh",
-    "hsseh",
-    ".hssh.",
+    ".HHHH..",
+    "HHHhLH.",
+    "HHkkkkk",
+    ".kkkekh",
+    ".kakkka",
+    ".kkkhhh",
 ];
 
 const HEAD_INK: Record<string, number> = {
     h: HELMET_DARK,
     H: HELMET,
     L: LAMP,
-    s: SKIN,
+    k: SKIN,
     e: EYE,
+    a: CHEEK,
 };
 
 export interface Point {
@@ -249,29 +268,68 @@ function closeHoles(buf: Uint8Array, width: number, height: number): void {
     }
 }
 
-function paint(buf: Uint8Array, width: number, height: number, points: ClimberPoints, originX: number, originY: number): void {
-    const p = (pt: Point): Point => ({ x: pt.x - originX, y: pt.y - originY });
-    const neck = p(points.neck);
-    const back = p(points.back);
-    const pelvis = p(points.pelvis);
-    const buttocks = p(points.buttocks);
-    const head = p(points.head);
-    const elbows = [p(points.elbows[0]), p(points.elbows[1])] as const;
-    const hands = [p(points.hands[0]), p(points.hands[1])] as const;
-    const knees = [p(points.knees[0]), p(points.knees[1])] as const;
-    const feet = [p(points.feet[0]), p(points.feet[1])] as const;
+function along(from: Point, to: Point, origin: Point, length: number): Point {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    return { x: origin.x + (dx / dist) * length, y: origin.y + (dy / dist) * length };
+}
 
-    const dx = pelvis.x - neck.x;
-    const dy = pelvis.y - neck.y;
-    const len = Math.hypot(dx, dy) || 1;
-    let ax = -dy / len;
-    let ay = dx / len;
-    if (ax > 0) {
-        ax = -ax;
-        ay = -ay;
+/** Physics directions, mockup lengths. The pelvis stays on the physics pelvis. */
+function mockupPoints(points: ClimberPoints): ClimberPoints {
+    const pelvis = points.pelvis;
+    const neck = along(points.pelvis, points.neck, pelvis, NECK_LEN);
+    const back = along(points.pelvis, points.back, pelvis, BACK_LEN);
+    const head = along(points.neck, points.head, neck, HEAD_LEN);
+    const buttocks = along(points.pelvis, points.buttocks, pelvis, HIP_LEN);
+    const knees: [Point, Point] = [
+        along(points.buttocks, points.knees[0], buttocks, THIGH_LEN),
+        along(points.buttocks, points.knees[1], buttocks, THIGH_LEN),
+    ];
+    const feet: [Point, Point] = [
+        along(points.knees[0], points.feet[0], knees[0], SHIN_LEN),
+        along(points.knees[1], points.feet[1], knees[1], SHIN_LEN),
+    ];
+    const elbows: [Point, Point] = [
+        along(points.neck, points.elbows[0], neck, UPPER_ARM),
+        along(points.neck, points.elbows[1], neck, UPPER_ARM),
+    ];
+    const hands: [Point, Point] = [
+        along(points.elbows[0], points.hands[0], elbows[0], FOREARM),
+        along(points.elbows[1], points.hands[1], elbows[1], FOREARM),
+    ];
+    return { neck, back, pelvis, buttocks, head, elbows, hands, knees, feet };
+}
+
+function paint(buf: Uint8Array, width: number, height: number, points: ClimberPoints, originX: number, originY: number): void {
+    const posed = mockupPoints(points);
+    const p = (pt: Point): Point => ({ x: pt.x - originX, y: pt.y - originY });
+    const neck = p(posed.neck);
+    const back = p(posed.back);
+    const pelvis = p(posed.pelvis);
+    const buttocks = p(posed.buttocks);
+    const head = p(posed.head);
+    const elbows = [p(posed.elbows[0]), p(posed.elbows[1])] as const;
+    const hands = [p(posed.hands[0]), p(posed.hands[1])] as const;
+    const knees = [p(posed.knees[0]), p(posed.knees[1])] as const;
+    const feet = [p(posed.feet[0]), p(posed.feet[1])] as const;
+
+    const tdx = neck.x - pelvis.x;
+    const tdy = neck.y - pelvis.y;
+    const tlen = Math.hypot(tdx, tdy) || 1;
+    const ux = tdx / tlen;
+    const uy = tdy / tlen;
+    let px = -uy;
+    let py = ux;
+    const hx = (hands[0].x + hands[1].x) / 2 - back.x;
+    const hy = (hands[0].y + hands[1].y) / 2 - back.y;
+    if (px * hx + py * hy > 0) {
+        px = -px;
+        py = -py;
     }
-    const pack = { x: back.x + ax * 2.4, y: back.y + ay * 1.2 };
-    fillCapsule(buf, width, height, pack.x, pack.y - 2.2, pack.x, pack.y + 2.2, PACK_R, PACK, PACK_DARK);
+    const pack = { x: back.x + px * 3.3, y: back.y + py * 3.3 };
+    fillCapsule(buf, width, height, pack.x - ux * 2.4, pack.y - uy * 2.4, pack.x + ux * 2.2, pack.y + uy * 2.2, PACK_R, PACK, PACK_DARK);
+    fillCapsule(buf, width, height, pack.x + ux * 2.2, pack.y + uy * 2.2, neck.x + px * 0.8, neck.y + py * 0.8, 0.85, PACK_DARK, PACK_DARK);
 
     for (let side = 0; side < 2; side++) {
         const knee = knees[side]!;
@@ -285,7 +343,7 @@ function paint(buf: Uint8Array, width: number, height: number, points: ClimberPo
         const sy = foot.y - knee.y;
         const sl = Math.hypot(sx, sy) || 1;
         fillDisc(buf, width, height, foot.x, foot.y, BOOT_R, BOOT);
-        fillCapsule(buf, width, height, foot.x, foot.y, foot.x + (sx / sl) * 2.4, foot.y + (sy / sl) * 2.4, BOOT_R, BOOT, BOOT_SHADE);
+        fillCapsule(buf, width, height, foot.x, foot.y, foot.x + (sx / sl) * 2, foot.y + (sy / sl) * 2, BOOT_R, BOOT, BOOT_SHADE);
     }
 
     fillCapsule(buf, width, height, buttocks.x, buttocks.y, pelvis.x, pelvis.y, TORSO, PANTS, PANTS_DARK);
@@ -304,11 +362,14 @@ function paint(buf: Uint8Array, width: number, height: number, points: ClimberPo
         fillCapsule(buf, width, height, elbow.x, elbow.y, hand.x, hand.y, ARM, SHIRT, SHIRT_SHADE);
         fillDisc(buf, width, height, elbow.x, elbow.y, ARM, SHIRT);
         fillDisc(buf, width, height, hand.x, hand.y, HAND_R, SKIN);
-        fillCapsule(buf, width, height, hand.x, hand.y, hand.x + 1.6, hand.y, HAND_R, SKIN, SKIN_SHADE);
+        const hx = hand.x - elbow.x;
+        const hy = hand.y - elbow.y;
+        const hl = Math.hypot(hx, hy) || 1;
+        fillCapsule(buf, width, height, hand.x, hand.y, hand.x + (hx / hl) * 1.4, hand.y + (hy / hl) * 1.4, HAND_R, SKIN, SKIN_SHADE);
     }
 
     fillDisc(buf, width, height, head.x, head.y, HEAD_R, HELMET);
-    stamp(buf, width, height, HEAD, HEAD_INK, head.x, head.y, 2, 1);
+    stamp(buf, width, height, HEAD, HEAD_INK, head.x, head.y, 3, 2);
     closeHoles(buf, width, height);
 }
 

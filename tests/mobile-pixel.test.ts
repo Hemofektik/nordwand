@@ -455,9 +455,27 @@ describe("climber silhouette", () => {
         for (const pose of STUDY_POSES) {
             const report = climberSilhouetteReport(rasterClimber(pose));
             expect(report.body).toBeGreaterThan(40);
-            expect(report.body).toBeLessThan(800);
+            expect(report.body).toBeLessThan(500);
             expect(report.components).toBe(1);
             expect(report.holes).toBe(0);
         }
+        const upright = rasterClimber(STUDY_POSES[0]!);
+        let minY = upright.height;
+        let maxY = 0;
+        for (let i = 0; i < upright.indices.length; i++) {
+            if ((upright.indices[i] ?? 0) === 0) {
+                continue;
+            }
+            const y = Math.floor(i / upright.width);
+            if (y < minY) {
+                minY = y;
+            }
+            if (y > maxY) {
+                maxY = y;
+            }
+        }
+        const span = maxY - minY + 1;
+        expect(span).toBeGreaterThan(32);
+        expect(span).toBeLessThan(48);
     });
 });
