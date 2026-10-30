@@ -17,7 +17,7 @@ npm install
 npm run dev
 ```
 
-Then open [http://localhost:8000](http://localhost:8000). The picture is the concept plate — about 420 pixels tall, the size of `bg_mountains` — scaled up by a whole number so every pixel stays square. On a phone that is a portrait view. Pinch-zoom, scrolling, and pull-to-refresh are disabled.
+Then open [http://localhost:8000](http://localhost:8000). The picture is the concept plate — about 420 pixels tall, the size of `bg_mountains` — scaled up by a whole number so every pixel stays square. On a phone that is a portrait view. Scrolling and pull-to-refresh are disabled. The page itself does not pinch-zoom; two fingers on the picture zoom the climb instead.
 
 The climber already moves by joint angles (see `concept/adr/0001-angular-only-motion.md`). A phone only needs the same two gestures the keyboard has: bow the body, and commit a move on the breath.
 
@@ -26,9 +26,10 @@ The climber already moves by joint angles (see `concept/adr/0001-angular-only-mo
 | **Lean** (bottom left) | Hold and drag. Right bows in toward the rock, left bows out. Same angular offset as **A** / **D**. |
 | **Climb** (bottom right) | Commit a move. Time it so the black breath ring sits on the white mark — a tight ring is a perfect move. Tapping the wall does this too. Same as **W**. |
 | **Let go** | Release every hold. Same as **F**. |
+| **Pinch** the picture | Zoom in or out by whole pixels. A thumb on the lean pad or the buttons is not part of the pinch. |
 | Top icons | Pause, new wall, mute, help. |
 
-The lean pad sits at the bottom left and the buttons at the bottom right. Both hide when the window is at least 1100px wide with a mouse, and come back on a narrower window, a tablet, a coarse pointer, or the first touch. Short and landscape screens shrink the pad so it stays on screen. Keyboard play is the same in every layout. The view does not zoom: one world unit is one logical pixel, and the window picks the integer scale.
+The lean pad sits at the bottom left and the buttons at the bottom right. Both hide when the window is at least 1100px wide with a mouse, and come back on a narrower window, a tablet, a coarse pointer, or the first touch. Short and landscape screens shrink the pad so it stays on screen. Keyboard play is the same in every layout. The mouse wheel and a pinch zoom by whole logical pixels (1 to 10 world-pixels on a side). The window still picks the integer scale up to the screen.
 
 | Key | Action |
 | --- | --- |
@@ -42,6 +43,7 @@ The lean pad sits at the bottom left and the buttons at the bottom right. Both h
 | **D** | Toggle debug. Holding it also leans in, same as the right arrow. |
 | **A** / Left, **Right** | Lean out / lean in |
 | **W**, Up | Climb |
+| Mouse wheel | Zoom in (up) or out (down), in whole pixels |
 
 ## How it feels
 

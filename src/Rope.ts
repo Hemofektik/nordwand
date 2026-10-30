@@ -140,8 +140,8 @@ export class Rope {
     private drawPitons(ctx: CanvasRenderingContext2D, cam: Camera): void {
         const s = Math.max(1, cam.pixelScale);
         const screenOf = (worldX: number, worldY: number): { x: number; y: number } => ({
-            x: worldToScreen(worldX, cam.posX, cam.canvas.width),
-            y: worldToScreen(worldY, cam.posY, cam.canvas.height),
+            x: worldToScreen(worldX, cam.posX, cam.canvas.width, cam.pixelScale),
+            y: worldToScreen(worldY, cam.posY, cam.canvas.height, cam.pixelScale),
         });
         for (const piton of worldPitons(this.wall)) {
             const p = screenOf(piton.x, piton.y);

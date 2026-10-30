@@ -1,3 +1,5 @@
+import { clampZoomTarget, pixelZoom } from "./zoom.ts";
+
 export class Camera {
     // Constants
     public readonly scale_smoothness = 10.0;
@@ -9,7 +11,10 @@ export class Camera {
     public posY = 0;
     public posXTarget = 0;
     public posYTarget = 0;
-    /** World units are logical pixels. The presenter is the only upscale. */
+    /**
+     * Logical pixels per world unit. `scale_target` keeps the fractional wheel
+     * and pinch value; `pixelScale` is the integer step that is actually drawn.
+     */
     public scale = 1;
     public scale_target = 1;
     public pixelScale = 1;
@@ -47,9 +52,9 @@ export class Camera {
         this.posXTarget = target_x;
         this.posYTarget = target_y;
 
-        this.scale = 1;
-        this.scale_target = 1;
-        this.pixelScale = 1;
+        this.scale_target = clampZoomTarget(this.scale_target);
+        this.pixelScale = pixelZoom(this.scale_target);
+        this.scale = this.pixelScale;
 
         if (this.posX !== this.posXTarget) {
             this.posX += deltaTime * (this.posXTarget - this.posX) * this.move_smoothness;

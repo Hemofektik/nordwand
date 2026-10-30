@@ -2,11 +2,12 @@ import { describe, expect, it } from "vitest";
 import { CLOUDS_PER_BAND, cloudInstance, cloudSpriteCount, cloudSpriteInfo } from "../src/cloudSprites.ts";
 import { climberSilhouetteReport, rasterClimber, STUDY_POSES } from "../src/pixelClimber.ts";
 import { ROCK_PATCHES, rockPatchPixels } from "../src/rockPatches.ts";
-import { applyRockShade, quantizeEdgeColumn, rockEdgeShade, rockIndexAt, rockPixelForCamera, rockWorldPixel, worldEdgeColumn, worldPitons, worldToScreen } from "../src/rockTexture.ts";
+import { applyRockShade, quantizeEdgeColumn, rockEdgeShade, rockIndexAt, rockPixelForCamera, rockWorldPixel, screenToWorld, worldEdgeColumn, worldPitons, worldToScreen } from "../src/rockTexture.ts";
 import { Wall } from "../src/Wall.ts";
 import { wrapTextureCoord } from "../src/pixelDraw.ts";
 import { clientToLogical, computeChromeLayout, computePixelViewport, uniformBlockMismatch } from "../src/pixelViewport.ts";
 import { bowDeltaFromLean, combinedLean, leanFromPointer } from "../src/touchInput.ts";
+import { clampZoomTarget, freePinchPair, pixelZoom, wheelZoomDirection, zoomFromPinch, zoomFromWheel } from "../src/zoom.ts";
 
 describe("computePixelViewport", () => {
     const samples: Array<[number, number, number]> = [
@@ -376,6 +377,76 @@ describe("cloud sprites", () => {
         expect(tiers.has("medium")).toBe(true);
         expect(tiers.has("small")).toBe(true);
         expect(widest).toBeGreaterThanOrEqual(120);
+    });
+});
+
+describe("zoom", () => {
+    it("steps the wheel by 1.2 and clamps the drawn scale to a whole pixel", () => {
+        expect(wheelZoomDirection(120, undefined, undefined)).toBe(1);
+        expect(wheelZoomDirection(undefined, 2, undefined)).toBe(-1);
+        expect(wheelZoomDirection(undefined, undefined, 40)).toBe(-1);
+        expect(wheelZoomDirection(undefined, undefined, -40)).toBe(1);
+        expect(wheelZoomDirection(0, 0, 0)).toBe(0);
+
+        let target = 1;
+        const drawn: number[] = [];
+        for (let i = 0; i < 20; i++) {
+            target = zoomFromWheel(target, 1);
+            drawn.push(pixelZoom(target));
+        }
+        expect(drawn[0]).toBe(1);
+        expect(drawn).toContain(2);
+        expect(drawn[drawn.length - 1]).toBe(10);
+        expect(pixelZoom(zoomFromWheel(10, 1))).toBe(10);
+        expect(zoomFromWheel(1, -1)).toBe(1);
+        expect(clampZoomTarget(Number.NaN)).toBe(1);
+        expect(pixelZoom(1.2)).toBe(1);
+        expect(pixelZoom(1.728)).toBe(2);
+    });
+
+    it("pinches on free fingers and leaves a thumb on the controls alone", () => {
+        expect(zoomFromPinch(2, 100, 150)).toBeCloseTo(3, 5);
+        expect(zoomFromPinch(2, 100, 10)).toBe(1);
+        expect(zoomFromPinch(8, 40, 80)).toBe(10);
+        expect(zoomFromPinch(4, 0, 80)).toBe(4);
+        expect(pixelZoom(zoomFromPinch(1, 100, 180))).toBe(2);
+
+        const pad = { x: 40, y: 800, onControl: true };
+        const button = { x: 300, y: 800, onControl: true };
+        const skyA = { x: 80, y: 200, onControl: false };
+        const skyB = { x: 180, y: 260, onControl: false };
+        expect(freePinchPair([pad, button])).toBeNull();
+        expect(freePinchPair([pad, skyA])).toBeNull();
+        expect(freePinchPair([skyA, skyB])?.[0]).toEqual(skyA);
+        expect(freePinchPair([pad, skyA, skyB])?.[1]).toEqual(skyB);
+    });
+
+    it("keeps world pixels identical at every integer zoom", () => {
+        const wall = new Wall(150, 200, 12345);
+        let y = 0;
+        let edge = 0;
+        for (let row = 0; row < 600; row++) {
+            const column = worldEdgeColumn(wall, row);
+            if (column !== undefined) {
+                y = row;
+                edge = column;
+                break;
+            }
+        }
+        const color = rockWorldPixel(wall, edge, y);
+        expect(color).not.toBeNull();
+        for (const zoom of [1, 2, 3, 10]) {
+            const sx = worldToScreen(edge, 20.4, 195, zoom);
+            const sy = worldToScreen(y, 30.6, 422, zoom);
+            expect(screenToWorld(sx, 20.4, 195, zoom)).toBe(edge);
+            expect(screenToWorld(sy, 30.6, 422, zoom)).toBe(y);
+            for (let step = 0; step < zoom; step++) {
+                expect(screenToWorld(sx + step, 20.4, 195, zoom)).toBe(edge);
+                expect(rockPixelForCamera(wall, 20.4, 30.6, 195, 422, sx + step, sy, zoom)).toEqual(color);
+            }
+            expect(screenToWorld(sx + zoom, 20.4, 195, zoom)).toBe(edge + 1);
+            expect(worldToScreen(edge, 21.4, 195, zoom)).toBe(sx - zoom);
+        }
     });
 });
 

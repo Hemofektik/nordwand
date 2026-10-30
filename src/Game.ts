@@ -9,6 +9,7 @@ import { drawBirds, drawClouds, drawMountains, drawSky, loadPixelScene } from ".
 import { clientToLogical } from "./pixelViewport.ts";
 import { Player } from "./Player.ts";
 import { bowDeltaFromLean, combinedLean, leanFromPointer } from "./touchInput.ts";
+import { freePinchPair, pinchDistance, wheelZoomDirection, zoomFromPinch, zoomFromWheel, type PinchPointer } from "./zoom.ts";
 import { Wall } from "./Wall.ts";
 import { requiredElement, setTextOfElement } from "./dom.ts";
 
@@ -62,6 +63,10 @@ export class Game {
     private leanVisual = 0;
     private leanPointerId: number | null = null;
     private lastTouchClimbAt = 0;
+    private lastWheelAt = 0;
+    private climbTimer: ReturnType<typeof setTimeout> | null = null;
+    private climbPoint: { x: number; y: number } | null = null;
+    private pinch: { startDistance: number; startScale: number } | null = null;
     private viewportKey = "";
     private readonly poseStudy: boolean;
 
@@ -105,12 +110,15 @@ export class Game {
         this.screen.addEventListener("mouseup", (ev) => this.mouse_up(ev), false);
         this.screen.addEventListener("touchstart", (ev) => this.touch_start(ev), { passive: false });
         {
-            document.addEventListener("DOMMouseScroll", (ev) => this.mouse_scroll(ev), false);
-            document.addEventListener("mousewheel", (ev) => this.mouse_scroll(ev), false);
+            document.addEventListener("wheel", (ev) => this.mouse_scroll(ev), { passive: false });
+            document.addEventListener("DOMMouseScroll", (ev) => this.mouse_scroll(ev), { passive: false });
+            document.addEventListener("mousewheel", (ev) => this.mouse_scroll(ev), { passive: false });
             window.addEventListener("keydown", (ev) => this.key_down(ev), false);
             window.addEventListener("keyup", (ev) => this.key_up(ev), false);
             window.addEventListener("blur", () => this.pause(true), false);
-            window.addEventListener("touchmove", (ev) => ev.preventDefault(), { passive: false });
+            window.addEventListener("touchmove", (ev) => this.touch_move(ev), { passive: false });
+            window.addEventListener("touchend", (ev) => this.touch_end(ev), { passive: false });
+            window.addEventListener("touchcancel", (ev) => this.touch_end(ev), { passive: false });
             window.addEventListener("gesturestart", (ev) => ev.preventDefault());
             window.addEventListener("touchstart", () => document.documentElement.classList.add("touch-input"), { passive: true });
 
@@ -244,15 +252,40 @@ export class Game {
     }
 
     public touch_start(ev: TouchEvent): void {
-        ev.preventDefault(); // Prevent dragging, pull-to-refresh, and the synthetic click climbing twice
-        const touch = ev.touches[0]; // Just pay attention to first touch
-        if (touch === undefined) {
+        ev.preventDefault(); // Prevent dragging, pull-to-refresh, browser pinch-zoom, and a second climb
+        this.updatePinch(ev.touches);
+        if (this.pinch !== null) {
+            this.cancelClimb();
             return;
         }
+        const started = ev.changedTouches[0];
+        if (started === undefined || this.touchOnControl(started.clientX, started.clientY)) {
+            return;
+        }
+        if (this.pictureTouches(ev.touches).length >= 2) {
+            return;
+        }
+        this.armClimb(started.clientX, started.clientY);
+    }
 
-        this.lastTouchClimbAt = performance.now();
-        const point = this.pointerToLogical(touch.clientX, touch.clientY);
-        this.click_at_point(point.x, point.y);
+    public touch_move(ev: TouchEvent): void {
+        ev.preventDefault();
+        this.updatePinch(ev.touches);
+        if (this.pinch !== null) {
+            this.cancelClimb();
+        }
+    }
+
+    public touch_end(ev: TouchEvent): void {
+        const wasPinch = this.pinch !== null;
+        this.updatePinch(ev.touches);
+        if (wasPinch) {
+            this.cancelClimb();
+            return;
+        }
+        if (ev.touches.length === 0) {
+            this.flushClimb();
+        }
     }
 
     public mouse_move(ev: MouseEvent): void {
@@ -288,6 +321,14 @@ export class Game {
 
     public mouse_scroll(event: Event): void {
         event.preventDefault();
+        const now = performance.now();
+        if (now - this.lastWheelAt < 8) {
+            return;
+        }
+        this.lastWheelAt = now;
+        const wheelEvent = event as WheelEvent & { wheelDelta?: number; detail?: number };
+        const direction = wheelZoomDirection(wheelEvent.wheelDelta, wheelEvent.detail, wheelEvent.deltaY);
+        this.cam.scale_target = zoomFromWheel(this.cam.scale_target, direction);
     }
 
     public key_up(e: KeyboardEvent): void {
@@ -448,6 +489,7 @@ export class Game {
             this.wall?.draw(this.ctx, this.cam, this.debug);
             this.updateHudInset();
             this.player?.draw(this.ctx, this.cam, this.debug);
+            document.documentElement.dataset["zoom"] = String(this.cam.pixelScale);
             this.cam.posX = easedX;
             this.cam.posY = easedY;
         }
@@ -558,6 +600,82 @@ export class Game {
         const overlapCss = Math.max(0, screenRect.bottom - hudRect.top);
         const overlapDevice = screenRect.height === 0 ? 0 : overlapCss * (this.presenter.layout.deviceHeight / screenRect.height);
         player.exhaustion.hudInsetBottom = Math.max(8, Math.round(overlapDevice / this.presenter.layout.scale) + 4);
+    }
+
+    private touchOnControl(clientX: number, clientY: number): boolean {
+        const el = document.elementFromPoint(clientX, clientY);
+        if (el === null) {
+            return false;
+        }
+        return el.closest("#lean, #touch-actions, #controls, #helpoverlay") !== null;
+    }
+
+    private pictureTouches(touches: TouchList): Touch[] {
+        const picture: Touch[] = [];
+        for (let i = 0; i < touches.length; i++) {
+            const touch = touches[i];
+            if (touch !== undefined && !this.touchOnControl(touch.clientX, touch.clientY)) {
+                picture.push(touch);
+            }
+        }
+        return picture;
+    }
+
+    private updatePinch(touches: TouchList): void {
+        const pointers: PinchPointer[] = [];
+        for (let i = 0; i < touches.length; i++) {
+            const touch = touches[i];
+            if (touch === undefined) {
+                continue;
+            }
+            pointers.push({
+                x: touch.clientX,
+                y: touch.clientY,
+                onControl: this.touchOnControl(touch.clientX, touch.clientY),
+            });
+        }
+        const pair = freePinchPair(pointers);
+        if (pair === null) {
+            this.pinch = null;
+            return;
+        }
+        const distance = pinchDistance(pair[0], pair[1]);
+        if (this.pinch === null) {
+            this.pinch = { startDistance: Math.max(distance, 1), startScale: this.cam.scale_target };
+            return;
+        }
+        this.cam.scale_target = zoomFromPinch(this.pinch.startScale, this.pinch.startDistance, distance);
+    }
+
+    private armClimb(clientX: number, clientY: number): void {
+        this.cancelClimb();
+        this.climbPoint = this.pointerToLogical(clientX, clientY);
+        this.climbTimer = setTimeout(() => {
+            this.climbTimer = null;
+            this.flushClimb();
+        }, 160);
+    }
+
+    private flushClimb(): void {
+        if (this.climbTimer !== null) {
+            clearTimeout(this.climbTimer);
+            this.climbTimer = null;
+        }
+        const point = this.climbPoint;
+        this.climbPoint = null;
+        if (point === null || this.pinch !== null) {
+            return;
+        }
+        this.lastTouchClimbAt = performance.now();
+        this.click_at_point(point.x, point.y);
+    }
+
+    private cancelClimb(): void {
+        if (this.climbTimer !== null) {
+            clearTimeout(this.climbTimer);
+            this.climbTimer = null;
+        }
+        this.climbPoint = null;
     }
 
     private bindLeanPad(pad: HTMLElement): void {

@@ -392,21 +392,19 @@ export function rockWorldPixel(wall: Wall, worldX: number, worldY: number): read
     return [chunk.pixels[i] ?? 0, chunk.pixels[i + 1] ?? 0, chunk.pixels[i + 2] ?? 0, alpha];
 }
 
-/** Screen pixel to the world pixel it shows, using a whole-pixel camera. */
-export function screenToWorld(screen: number, cameraPos: number, viewSize: number): number {
-    return Math.floor(screen + 0.5 + Math.round(cameraPos) - viewSize / 2);
+/** Screen pixel to the world pixel it shows. `zoom` is whole logical pixels per world unit. */
+export function screenToWorld(screen: number, cameraPos: number, viewSize: number, zoom = 1): number {
+    const z = zoom >= 1 && Number.isFinite(zoom) ? Math.round(zoom) : 1;
+    return Math.floor((screen + 0.5 + Math.round(cameraPos) * z - viewSize / 2) / z);
 }
 
-/** Screen pixel that shows this world pixel under a whole-pixel camera. */
-export function worldToScreen(world: number, cameraPos: number, viewSize: number): number {
+/** First screen pixel of the block that shows this world pixel. */
+export function worldToScreen(world: number, cameraPos: number, viewSize: number, zoom = 1): number {
+    const z = zoom >= 1 && Number.isFinite(zoom) ? Math.round(zoom) : 1;
     const wx = Math.floor(world);
-    const guess = Math.floor(wx - Math.round(cameraPos) + viewSize / 2);
-    for (let screen = guess - 1; screen <= guess + 1; screen++) {
-        if (screenToWorld(screen, cameraPos, viewSize) === wx) {
-            return screen;
-        }
-    }
-    return guess;
+    const pos = Math.round(cameraPos);
+    const lower = wx * z - pos * z + viewSize / 2 - 0.5;
+    return Math.ceil(lower - 1e-6);
 }
 
 /** Same baked pixel the screen shows at this camera, including fractional cameras. */
@@ -418,8 +416,13 @@ export function rockPixelForCamera(
     viewHeight: number,
     screenX: number,
     screenY: number,
+    zoom = 1,
 ): readonly [number, number, number, number] | null {
-    return rockWorldPixel(wall, screenToWorld(screenX, cameraX, viewWidth), screenToWorld(screenY, cameraY, viewHeight));
+    return rockWorldPixel(
+        wall,
+        screenToWorld(screenX, cameraX, viewWidth, zoom),
+        screenToWorld(screenY, cameraY, viewHeight, zoom),
+    );
 }
 
 /**
@@ -517,14 +520,15 @@ export function drawRockFace(ctx: CanvasRenderingContext2D, cam: Camera, wall: W
         frame.data.fill(0);
     }
     const pixels = frame.data;
+    const zoom = cam.pixelScale;
     let activeKey = "";
     let active: RockChunk | undefined;
     for (let sy = 0; sy < height; sy++) {
-        const wy = screenToWorld(sy, cam.posY, height);
+        const wy = screenToWorld(sy, cam.posY, height, zoom);
         const cy = Math.floor(wy / CHUNK);
         const ly = wy - cy * CHUNK;
         for (let sx = 0; sx < width; sx++) {
-            const wx = screenToWorld(sx, cam.posX, width);
+            const wx = screenToWorld(sx, cam.posX, width, zoom);
             const cx = Math.floor(wx / CHUNK);
             const key = `${cx}:${cy}`;
             if (key !== activeKey) {
