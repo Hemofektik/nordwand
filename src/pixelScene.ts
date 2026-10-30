@@ -35,10 +35,10 @@ export function drawMountains(ctx: CanvasRenderingContext2D, cam: Camera): void 
     if (!imageReady(mountains)) {
         return;
     }
-    const parallax = Math.round(-cam.posY * 0.08);
+    const parallax = Math.round(-Math.round(cam.posY) * 0.08);
     const y = Math.round(cam.canvas.height - mountains.naturalHeight + parallax);
     const tile = mountains.naturalWidth;
-    const drift = Math.round(-cam.posX * 0.02);
+    const drift = Math.round(-Math.round(cam.posX) * 0.02);
     let x = ((drift % tile) + tile) % tile;
     if (x > 0) {
         x -= tile;

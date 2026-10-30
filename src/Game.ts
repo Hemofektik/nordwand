@@ -436,14 +436,20 @@ export class Game {
             this.player?.update(this.gameTime, this.frame_delta!);
         }
 
-        // rendering
+        // rendering. Snap after the ease so a fractional camera cannot shift the world grid.
         {
+            const easedX = this.cam.posX;
+            const easedY = this.cam.posY;
+            this.cam.posX = this.cam.drawX();
+            this.cam.posY = this.cam.drawY();
             drawMountains(this.ctx, this.cam);
             drawClouds(this.ctx, this.cam, this.gameTime, this.wall?.seed ?? 1);
             drawBirds(this.ctx, this.gameTime);
             this.wall?.draw(this.ctx, this.cam, this.debug);
             this.updateHudInset();
             this.player?.draw(this.ctx, this.cam, this.debug);
+            this.cam.posX = easedX;
+            this.cam.posY = easedY;
         }
 
         // Update music player

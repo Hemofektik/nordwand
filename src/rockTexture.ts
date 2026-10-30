@@ -10,10 +10,10 @@ import { ROCK_PATCHES, rockPatchPixels } from "./rockPatches.ts";
  * patch remapped from `tex_fels_01`. Cells are smaller than a stencil,
  * so a window never wraps a non-seamless crop. Borders cross-fade with
  * an ordered dither, and each cell is flipped and shifted from the seed.
- * Chunks cache that collage. The silhouette is `wallXAtY` sampled once per
- * logical row and snapped to that pixel. Lip shading, ledge moss, and the
- * depth into the rock are measured from those integer columns. Collision
- * stays on `wallXAtY`. Nothing here calls the wall RNG.
+ * Chunks cache that collage. The silhouette is chosen once per integer
+ * world row from `wallXAtY`, and the lip shade, shelf moss, and pitons are
+ * baked into the same chunks. Nothing in that bake reads the camera.
+ * Collision stays on `wallXAtY`. Nothing here calls the wall RNG.
  */
 
 const CHUNK = 64;
@@ -54,11 +54,18 @@ const BAYER: ReadonlyArray<ReadonlyArray<number>> = [
 ];
 
 interface RockChunk {
-    canvas: HTMLCanvasElement;
-    indices: Uint8Array;
+    pixels: Uint8ClampedArray;
+    complete: boolean;
+    segments: number;
 }
 
 const chunks = new Map<string, RockChunk>();
+const edgeColumns = new Map<string, number>();
+const pitonColumns = new Map<number, ReadonlyArray<{ x: number; y: number }>>();
+
+const PITON_DARK: readonly [number, number, number] = [0x4e, 0x54, 0x5c];
+const PITON_BODY: readonly [number, number, number] = [0xb7, 0xbc, 0xc4];
+const PITON_HI: readonly [number, number, number] = [0xe7, 0xeb, 0xf0];
 
 function hash3(x: number, y: number, s: number): number {
     let n = Math.imul(x | 0, 374761393) ^ Math.imul(y | 0, 668265263) ^ Math.imul(s | 0, 1440672389);
@@ -179,43 +186,7 @@ export function rockIndexAt(x: number, y: number, seed: number): number {
     return index;
 }
 
-function bakeChunk(seed: number, cx: number, cy: number): RockChunk {
-    const canvas = document.createElement("canvas");
-    canvas.width = CHUNK;
-    canvas.height = CHUNK;
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    if (ctx === null) {
-        throw new Error("Rock chunk context is not available");
-    }
-    ctx.imageSmoothingEnabled = false;
-    const image = ctx.createImageData(CHUNK, CHUNK);
-    const indices = new Uint8Array(CHUNK * CHUNK);
-    const x0 = cx * CHUNK;
-    const y0 = cy * CHUNK;
-    const rgba = image.data;
-    for (let y = 0; y < CHUNK; y++) {
-        for (let x = 0; x < CHUNK; x++) {
-            const idx = rockIndexAt(x0 + x, y0 + y, seed);
-            indices[y * CHUNK + x] = idx;
-            const rgb = PALETTE[idx] ?? PALETTE[8]!;
-            const i = (y * CHUNK + x) * 4;
-            rgba[i] = rgb[0]!;
-            rgba[i + 1] = rgb[1]!;
-            rgba[i + 2] = rgb[2]!;
-            rgba[i + 3] = 255;
-        }
-    }
-    ctx.putImageData(image, 0, 0);
-    return { canvas, indices };
-}
-
-function getChunk(seed: number, cx: number, cy: number): RockChunk {
-    const key = `${seed}:${cx}:${cy}`;
-    const hit = chunks.get(key);
-    if (hit !== undefined) {
-        return hit;
-    }
-    const baked = bakeChunk(seed, cx, cy);
+function rememberChunk(key: string, baked: RockChunk): RockChunk {
     chunks.set(key, baked);
     if (chunks.size > 96) {
         const oldest = chunks.keys().next().value;
@@ -227,25 +198,228 @@ function getChunk(seed: number, cx: number, cy: number): RockChunk {
 }
 
 /**
- * Snap a collision sample to a logical column.
+ * Snap a collision sample to a world column.
  *
- * `screenX` is `wallXAtY` in the same pixel space as the logical frame.
- * The result is `floor(screenX)` or `ceil(screenX)`, so the drawn edge stays
- * within one logical pixel of the collision line. The Bayer threshold only
- * chooses which of those two columns a fractional sample lands on.
+ * `worldX` is `wallXAtY` and `worldY` is the integer world row. The result is
+ * `floor(worldX)` or `ceil(worldX)`, so the drawn edge stays within one pixel
+ * of the collision line. The Bayer cell is `(worldX, worldY)`, never a screen
+ * coordinate, so the choice does not move with the camera.
  */
-export function quantizeEdgeColumn(screenX: number, row: number): number {
-    if (!Number.isFinite(screenX)) {
+export function quantizeEdgeColumn(worldX: number, worldY: number): number {
+    if (!Number.isFinite(worldX)) {
         return 0;
     }
-    const base = Math.floor(screenX);
-    const frac = screenX - base;
+    const base = Math.floor(worldX);
+    const frac = worldX - base;
     if (frac === 0) {
         return base;
     }
-    const rowKey = row < 0 ? -row : row;
-    const threshold = (BAYER[rowKey & 7]![0]! + 0.5) / 64;
+    const rowKey = worldY < 0 ? -worldY : worldY;
+    const colKey = base < 0 ? -base : base;
+    const threshold = (BAYER[rowKey & 7]![colKey & 7]! + 0.5) / 64;
     return frac >= threshold ? base + 1 : base;
+}
+
+/** True when this world row is above the generated wall and may appear later. */
+function edgeStillGrowing(wall: Wall, worldY: number): boolean {
+    const top = wall.wallSegments[wall.wallSegments.length - 1];
+    return top !== undefined && worldY < top.posY;
+}
+
+/**
+ * World x of the silhouette on one integer world row. Sampled once from
+ * `wallXAtY` at the row center and then cached. Camera position is not an input.
+ */
+export function worldEdgeColumn(wall: Wall, worldY: number): number | undefined {
+    const wy = Math.floor(worldY);
+    const key = `${wall.seed}:${wy}`;
+    const cached = edgeColumns.get(key);
+    if (cached !== undefined) {
+        return cached;
+    }
+    const wallX = wall.wallXAtY(wy + 0.5);
+    if (wallX === undefined) {
+        return undefined;
+    }
+    const column = quantizeEdgeColumn(wallX, wy);
+    edgeColumns.set(key, column);
+    return column;
+}
+
+function worldSlope(wall: Wall, worldY: number): { slope: number; pending: boolean } {
+    const belowY = worldY + 2;
+    const aboveY = worldY - 2;
+    const below = worldEdgeColumn(wall, belowY);
+    const above = worldEdgeColumn(wall, aboveY);
+    const pending =
+        (below === undefined && edgeStillGrowing(wall, belowY)) ||
+        (above === undefined && edgeStillGrowing(wall, aboveY));
+    if (below === undefined || above === undefined) {
+        return { slope: 0, pending };
+    }
+    return { slope: (below - above) / 4, pending };
+}
+
+/** Metal pins on the bolted span, in world pixels. Stable for a wall seed. */
+export function worldPitons(wall: Wall): ReadonlyArray<{ x: number; y: number }> {
+    const cached = pitonColumns.get(wall.seed);
+    if (cached !== undefined) {
+        return cached;
+    }
+    const stamps: { x: number; y: number }[] = [];
+    const last = Math.min(wall.wallAnchors.length - 1, 26);
+    const seen = new Set<number>();
+    for (let i = 16; i <= last; i += 3) {
+        const anchor = wall.wallAnchors[i];
+        if (anchor === undefined) {
+            continue;
+        }
+        const y = Math.floor(anchor.posY);
+        const edge = worldEdgeColumn(wall, y);
+        if (edge === undefined || seen.has(y)) {
+            continue;
+        }
+        seen.add(y);
+        stamps.push({ x: edge, y });
+    }
+    const end = wall.wallAnchors[last];
+    if (end !== undefined) {
+        const y = Math.floor(end.posY);
+        const edge = worldEdgeColumn(wall, y);
+        if (edge !== undefined && !seen.has(y)) {
+            stamps.push({ x: edge, y });
+        }
+    }
+    pitonColumns.set(wall.seed, stamps);
+    return stamps;
+}
+
+function paint(pixels: Uint8ClampedArray, lx: number, ly: number, rgb: readonly [number, number, number]): void {
+    if (lx < 0 || ly < 0 || lx >= CHUNK || ly >= CHUNK) {
+        return;
+    }
+    const i = (ly * CHUNK + lx) * 4;
+    pixels[i] = rgb[0];
+    pixels[i + 1] = rgb[1];
+    pixels[i + 2] = rgb[2];
+    pixels[i + 3] = 255;
+}
+
+function bakeChunk(wall: Wall, cx: number, cy: number): RockChunk {
+    const pixels = new Uint8ClampedArray(CHUNK * CHUNK * 4);
+    const seed = wall.seed;
+    let complete = true;
+    for (let ly = 0; ly < CHUNK; ly++) {
+        const wy = cy * CHUNK + ly;
+        const edge = worldEdgeColumn(wall, wy);
+        if (edge === undefined) {
+            if (edgeStillGrowing(wall, wy + 0.5)) {
+                complete = false;
+            }
+            continue;
+        }
+        const slope = worldSlope(wall, wy);
+        if (slope.pending) {
+            complete = false;
+        }
+        const shelf = slope.slope < -0.35;
+        const blades = shelf ? 1 + (hash3(edge, wy, seed) % 2) : 0;
+        const moss = hash3(wy, seed, 6) % 2 === 0 ? MOSS_HI : MOSS;
+        for (let lx = 0; lx < CHUNK; lx++) {
+            const wx = cx * CHUNK + lx;
+            const depth = wx - edge;
+            let idx: number | undefined;
+            if (depth < 0) {
+                if (shelf && depth >= -blades) {
+                    idx = moss;
+                }
+            } else {
+                idx = rockIndexAt(wx, wy, seed);
+                if (shelf && depth < 2) {
+                    idx = hash3(wx, wy, seed) % 2 === 0 ? MOSS_HI : MOSS;
+                }
+                if (depth < SHADE_REACH) {
+                    idx = applyRockShade(idx, rockEdgeShade(depth, slope.slope, wx, wy));
+                }
+            }
+            const rgb = idx === undefined ? undefined : PALETTE[idx];
+            if (rgb !== undefined) {
+                paint(pixels, lx, ly, rgb);
+            }
+        }
+    }
+    for (const piton of worldPitons(wall)) {
+        const originX = piton.x - cx * CHUNK;
+        const originY = piton.y - cy * CHUNK;
+        for (let dy = -2; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 2; dx++) {
+                paint(pixels, originX + dx, originY + dy, PITON_DARK);
+            }
+        }
+        for (let dy = -1; dy <= 0; dy++) {
+            for (let dx = 0; dx <= 2; dx++) {
+                paint(pixels, originX + dx, originY + dy, PITON_BODY);
+            }
+        }
+        paint(pixels, originX + 1, originY - 1, PITON_HI);
+    }
+    return { pixels, complete, segments: wall.wallSegments.length };
+}
+
+function chunkAt(wall: Wall, cx: number, cy: number): RockChunk {
+    const key = `${wall.seed}:${cx}:${cy}`;
+    const hit = chunks.get(key);
+    if (hit !== undefined && (hit.complete || hit.segments === wall.wallSegments.length)) {
+        return hit;
+    }
+    return rememberChunk(key, bakeChunk(wall, cx, cy));
+}
+
+/** Baked colour of one world pixel, or null where the sky shows through. */
+export function rockWorldPixel(wall: Wall, worldX: number, worldY: number): readonly [number, number, number, number] | null {
+    const wx = Math.floor(worldX);
+    const wy = Math.floor(worldY);
+    const cx = Math.floor(wx / CHUNK);
+    const cy = Math.floor(wy / CHUNK);
+    const chunk = chunkAt(wall, cx, cy);
+    const lx = wx - cx * CHUNK;
+    const ly = wy - cy * CHUNK;
+    const i = (ly * CHUNK + lx) * 4;
+    const alpha = chunk.pixels[i + 3] ?? 0;
+    if (alpha === 0) {
+        return null;
+    }
+    return [chunk.pixels[i] ?? 0, chunk.pixels[i + 1] ?? 0, chunk.pixels[i + 2] ?? 0, alpha];
+}
+
+/** Screen pixel to the world pixel it shows, using a whole-pixel camera. */
+export function screenToWorld(screen: number, cameraPos: number, viewSize: number): number {
+    return Math.floor(screen + 0.5 + Math.round(cameraPos) - viewSize / 2);
+}
+
+/** Screen pixel that shows this world pixel under a whole-pixel camera. */
+export function worldToScreen(world: number, cameraPos: number, viewSize: number): number {
+    const wx = Math.floor(world);
+    const guess = Math.floor(wx - Math.round(cameraPos) + viewSize / 2);
+    for (let screen = guess - 1; screen <= guess + 1; screen++) {
+        if (screenToWorld(screen, cameraPos, viewSize) === wx) {
+            return screen;
+        }
+    }
+    return guess;
+}
+
+/** Same baked pixel the screen shows at this camera, including fractional cameras. */
+export function rockPixelForCamera(
+    wall: Wall,
+    cameraX: number,
+    cameraY: number,
+    viewWidth: number,
+    viewHeight: number,
+    screenX: number,
+    screenY: number,
+): readonly [number, number, number, number] | null {
+    return rockWorldPixel(wall, screenToWorld(screenX, cameraX, viewWidth), screenToWorld(screenY, cameraY, viewHeight));
 }
 
 /**
@@ -298,15 +472,6 @@ export function applyRockShade(index: number, steps: number): number {
     return next < 0 ? 0 : next;
 }
 
-function columnSlope(columns: ReadonlyArray<number | undefined>, y: number): number {
-    const below = columns[y + 2];
-    const above = columns[y - 2];
-    if (below === undefined || above === undefined) {
-        return 0;
-    }
-    return (below - above) / 4;
-}
-
 let rockLayer: HTMLCanvasElement | null = null;
 let frame: ImageData | null = null;
 
@@ -338,14 +503,13 @@ function write(pixels: Uint8ClampedArray, width: number, height: number, x: numb
     pixels[i + 3] = 255;
 }
 
-/** Copy cached chunks into the frame and darken the lip from the silhouette normal. */
+/** Blit the baked world chunks. The camera only chooses which world pixels are on screen. */
 export function drawRockFace(ctx: CanvasRenderingContext2D, cam: Camera, wall: Wall): void {
     const width = cam.canvas.width;
     const height = cam.canvas.height;
     if (width <= 0 || height <= 0) {
         return;
     }
-    const seed = wall.seed;
     const overlay = layer(width, height);
     if (frame === null || frame.width !== width || frame.height !== height) {
         frame = overlay.createImageData(width, height);
@@ -353,63 +517,31 @@ export function drawRockFace(ctx: CanvasRenderingContext2D, cam: Camera, wall: W
         frame.data.fill(0);
     }
     const pixels = frame.data;
-    const columns: Array<number | undefined> = new Array(height);
-    const worldRows = new Float64Array(height);
-
-    for (let y = 0; y < height; y++) {
-        const worldY = cam.viewport_to_world_y_pixel(y + 0.5);
-        worldRows[y] = worldY;
-        const wallX = wall.wallXAtY(worldY);
-        if (wallX === undefined) {
-            continue;
-        }
-        columns[y] = quantizeEdgeColumn(cam.world_to_viewport_x_pixel(wallX), y);
-    }
-
-    for (let y = 0; y < height; y++) {
-        const column = columns[y];
-        const worldY = worldRows[y] ?? 0;
-        if (column === undefined) {
-            continue;
-        }
-        const slope = columnSlope(columns, y);
-        const shelf = slope < -0.35;
-        if (shelf) {
-            const blades = 1 + (hash3(column, y, seed) % 2);
-            const moss = hash3(y, seed, 6) % 2 === 0 ? PALETTE[MOSS_HI]! : PALETTE[MOSS]!;
-            for (let b = 1; b <= blades; b++) {
-                write(pixels, width, height, column - b, y, moss);
-            }
-        }
-
-        const x0 = column < 0 ? 0 : column;
-        const wy = Math.floor(worldY);
+    let activeKey = "";
+    let active: RockChunk | undefined;
+    for (let sy = 0; sy < height; sy++) {
+        const wy = screenToWorld(sy, cam.posY, height);
         const cy = Math.floor(wy / CHUNK);
-        let activeCx = Number.NaN;
-        let active: RockChunk | undefined;
-        for (let x = x0; x < width; x++) {
-            const depth = x - column;
-            const worldX = cam.viewport_to_world_x_pixel(x + 0.5);
-            const wx = Math.floor(worldX);
+        const ly = wy - cy * CHUNK;
+        for (let sx = 0; sx < width; sx++) {
+            const wx = screenToWorld(sx, cam.posX, width);
             const cx = Math.floor(wx / CHUNK);
-            if (cx !== activeCx) {
-                active = getChunk(seed, cx, cy);
-                activeCx = cx;
+            const key = `${cx}:${cy}`;
+            if (key !== activeKey) {
+                active = chunkAt(wall, cx, cy);
+                activeKey = key;
             }
             const chunk = active;
             if (chunk === undefined) {
                 continue;
             }
             const lx = wx - cx * CHUNK;
-            const ly = wy - cy * CHUNK;
-            let idx = chunk.indices[ly * CHUNK + lx] ?? 8;
-            if (shelf && depth < 2) {
-                idx = hash3(wx, wy, seed) % 2 === 0 ? MOSS_HI : MOSS;
+            const i = (ly * CHUNK + lx) * 4;
+            const alpha = chunk.pixels[i + 3] ?? 0;
+            if (alpha === 0) {
+                continue;
             }
-            if (depth < SHADE_REACH) {
-                idx = applyRockShade(idx, rockEdgeShade(depth, slope, x, y));
-            }
-            write(pixels, width, height, x, y, PALETTE[idx] ?? PALETTE[8]!);
+            write(pixels, width, height, sx, sy, [chunk.pixels[i] ?? 0, chunk.pixels[i + 1] ?? 0, chunk.pixels[i + 2] ?? 0]);
         }
     }
 

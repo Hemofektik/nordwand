@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CLOUDS_PER_BAND, cloudInstance, cloudSpriteCount, cloudSpriteInfo } from "../src/cloudSprites.ts";
 import { climberSilhouetteReport, rasterClimber, STUDY_POSES } from "../src/pixelClimber.ts";
 import { ROCK_PATCHES, rockPatchPixels } from "../src/rockPatches.ts";
-import { applyRockShade, quantizeEdgeColumn, rockEdgeShade, rockIndexAt } from "../src/rockTexture.ts";
+import { applyRockShade, quantizeEdgeColumn, rockEdgeShade, rockIndexAt, rockPixelForCamera, rockWorldPixel, worldEdgeColumn, worldPitons, worldToScreen } from "../src/rockTexture.ts";
 import { Wall } from "../src/Wall.ts";
 import { wrapTextureCoord } from "../src/pixelDraw.ts";
 import { clientToLogical, computeChromeLayout, computePixelViewport, uniformBlockMismatch } from "../src/pixelViewport.ts";
@@ -142,6 +142,67 @@ describe("quantizeEdgeColumn", () => {
         expect(quantizeEdgeColumn(4, 3)).toBe(4);
         expect(quantizeEdgeColumn(-1.2, 1)).toBeGreaterThanOrEqual(-2);
         expect(quantizeEdgeColumn(-1.2, 1)).toBeLessThanOrEqual(-1);
+    });
+});
+
+describe("world-locked wall edge", () => {
+    it("keeps the same world pixels at whole-pixel and sub-pixel cameras", () => {
+        const wall = new Wall(150, 200, 12345);
+        const rows: number[] = [];
+        for (let y = 0; y < 600; y++) {
+            const edge = worldEdgeColumn(wall, y);
+            if (edge === undefined) {
+                continue;
+            }
+            const sample = wall.wallXAtY(y + 0.5);
+            expect(sample).toBeTypeOf("number");
+            expect(Math.abs(edge - sample!)).toBeLessThanOrEqual(1);
+            expect(worldEdgeColumn(wall, y + 0.2)).toBe(edge);
+            expect(worldEdgeColumn(wall, y + 0.8)).toBe(edge);
+            rows.push(y);
+        }
+        expect(rows.length).toBeGreaterThan(20);
+
+        const probe: Array<[number, number]> = [];
+        for (const y of rows) {
+            const edge = worldEdgeColumn(wall, y)!;
+            for (let dx = -2; dx <= 4; dx++) {
+                probe.push([edge + dx, y]);
+            }
+            if (probe.length > 500) {
+                break;
+            }
+        }
+        const baseline = probe.map(([x, y]) => rockWorldPixel(wall, x, y));
+        const edges = rows.map((y) => worldEdgeColumn(wall, y));
+        const cameras = [
+            [0, 0],
+            [1, 0],
+            [0, 1],
+            [-4, 7],
+            [12.2, 200.4],
+            [12.8, 200.9],
+            [13.5, 201.5],
+            [80.1, 350.2],
+        ];
+        const viewWidth = 195;
+        const viewHeight = 422;
+        for (const [cameraX, cameraY] of cameras) {
+            for (let i = 0; i < probe.length; i++) {
+                const point = probe[i]!;
+                const sx = worldToScreen(point[0], cameraX!, viewWidth);
+                const sy = worldToScreen(point[1], cameraY!, viewHeight);
+                expect(rockPixelForCamera(wall, cameraX!, cameraY!, viewWidth, viewHeight, sx, sy)).toEqual(baseline[i]);
+            }
+            expect(rows.map((y) => worldEdgeColumn(wall, y))).toEqual(edges);
+            expect(worldToScreen(100, cameraX! + 1, viewWidth)).toBe(worldToScreen(100, cameraX!, viewWidth) - 1);
+        }
+
+        const piton = worldPitons(wall)[0];
+        expect(piton).toBeDefined();
+        const metal = rockWorldPixel(wall, piton!.x, piton!.y);
+        expect(metal).toEqual([0xb7, 0xbc, 0xc4, 255]);
+        expect(rockPixelForCamera(wall, 3.4, piton!.y + 0.6, viewWidth, viewHeight, worldToScreen(piton!.x, 3.4, viewWidth), worldToScreen(piton!.y, piton!.y + 0.6, viewHeight))).toEqual(metal);
     });
 });
 

@@ -1,7 +1,7 @@
 import type { Camera } from "./Camera.ts";
 import type { SpringPhysics } from "./Physics.ts";
 import { snapScreen } from "./pixelDraw.ts";
-import { quantizeEdgeColumn } from "./rockTexture.ts";
+import { worldPitons, worldToScreen } from "./rockTexture.ts";
 import type { Skeleton } from "./Skeleton.ts";
 import type { Wall, WallAnchor } from "./Wall.ts";
 
@@ -139,64 +139,43 @@ export class Rope {
     /** Metal clips where the rope meets the rock. Drawn only; the constraints are unchanged. */
     private drawPitons(ctx: CanvasRenderingContext2D, cam: Camera): void {
         const s = Math.max(1, cam.pixelScale);
-        const seen = new Set<string>();
-        const onEdge = (worldY: number, fallbackX: number): { x: number; y: number } => {
-            const y = Math.round(cam.world_to_viewport_y_pixel(worldY));
-            const wallX = this.wall.wallXAtY(worldY) ?? fallbackX;
-            return { x: quantizeEdgeColumn(cam.world_to_viewport_x_pixel(wallX), y), y };
-        };
-        const mark = (worldX: number, worldY: number): void => {
-            const p = onEdge(worldY, worldX);
-            const key = `${p.x},${p.y}`;
-            if (seen.has(key)) {
-                return;
-            }
-            seen.add(key);
+        const screenOf = (worldX: number, worldY: number): { x: number; y: number } => ({
+            x: worldToScreen(worldX, cam.posX, cam.canvas.width),
+            y: worldToScreen(worldY, cam.posY, cam.canvas.height),
+        });
+        for (const piton of worldPitons(this.wall)) {
+            const p = screenOf(piton.x, piton.y);
             ctx.fillStyle = PITON_DARK;
             ctx.fillRect(p.x - s, p.y - 2 * s, s * 4, s * 4);
             ctx.fillStyle = PITON;
             ctx.fillRect(p.x, p.y - s, s * 3, s * 2);
             ctx.fillStyle = PITON_HI;
             ctx.fillRect(p.x + s, p.y - s, s, s);
-        };
 
-        for (const index of this.fixedConstraintIndices) {
-            const fixed = this.phys.fixedConstraints[index];
-            if (fixed === undefined || !fixed.isEnabled) {
-                continue;
+            let nearestX = piton.x;
+            let nearestY = piton.y;
+            let nearest = Number.POSITIVE_INFINITY;
+            for (const constraintIndex of this.distanceConstraintIndices) {
+                const constraint = this.phys.distanceConstraints[constraintIndex];
+                const state = constraint === undefined ? undefined : this.phys.particleStates[constraint.particleIndex0];
+                if (state === undefined) {
+                    continue;
+                }
+                const distance = Math.abs(state.posY - piton.y);
+                if (distance < nearest) {
+                    nearest = distance;
+                    nearestX = state.posX;
+                    nearestY = state.posY;
+                }
             }
-            mark(fixed.posX, fixed.posY);
-        }
-
-        if (this.fixedConstraintIndices.length < 2) {
-            return;
-        }
-        const first = this.phys.fixedConstraints[this.fixedConstraintIndices[0]!];
-        const second = this.phys.fixedConstraints[this.fixedConstraintIndices[1]!];
-        if (first === undefined || second === undefined) {
-            return;
-        }
-        const i0 = Math.min(first.particleIndex, second.particleIndex);
-        const i1 = Math.max(first.particleIndex, second.particleIndex);
-        for (let i = i0; i <= i1; i += 3) {
-            const state = this.phys.particleStates[i];
-            if (state === undefined) {
-                continue;
-            }
-            const wallX = this.wall.wallXAtY(state.posY);
-            if (wallX === undefined) {
-                continue;
-            }
-            mark(wallX, state.posY);
-            const bolt = onEdge(state.posY, wallX);
-            const rope = snapScreen(cam, state.posX, state.posY);
+            const rope = snapScreen(cam, nearestX, nearestY);
             ctx.fillStyle = ROPE;
-            const dx = rope.x - bolt.x;
-            const dy = rope.y - bolt.y;
+            const dx = rope.x - p.x;
+            const dy = rope.y - p.y;
             const steps = Math.max(Math.abs(dx), Math.abs(dy)) / s;
             for (let n = 0; n <= steps; n++) {
                 const t = steps === 0 ? 0 : n / steps;
-                ctx.fillRect(Math.round(bolt.x + dx * t), Math.round(bolt.y + dy * t), s, s);
+                ctx.fillRect(Math.round(p.x + dx * t), Math.round(p.y + dy * t), s, s);
             }
         }
     }

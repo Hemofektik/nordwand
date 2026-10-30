@@ -18,20 +18,29 @@ export class Camera {
         this.canvas = canvas;
     }
 
+    /** Drawing samples the world on whole pixels. The eased position stays fractional. */
+    public drawX(): number {
+        return Math.round(this.posX);
+    }
+
+    public drawY(): number {
+        return Math.round(this.posY);
+    }
+
     public world_to_viewport_x_pixel(x: number): number {
-        return (x * this.pixelScale) + (this.canvas.width / 2) - (this.posX * this.pixelScale);
+        return (x * this.pixelScale) + (this.canvas.width / 2) - (this.drawX() * this.pixelScale);
     }
 
     public world_to_viewport_y_pixel(y: number): number {
-        return (y * this.pixelScale) + (this.canvas.height / 2) - (this.posY * this.pixelScale);
+        return (y * this.pixelScale) + (this.canvas.height / 2) - (this.drawY() * this.pixelScale);
     }
 
     public viewport_to_world_x_pixel(x: number): number {
-        return (x + (this.posX * this.pixelScale) - (this.canvas.width / 2)) / this.pixelScale;
+        return (x + (this.drawX() * this.pixelScale) - (this.canvas.width / 2)) / this.pixelScale;
     }
 
     public viewport_to_world_y_pixel(y: number): number {
-        return (y + (this.posY * this.pixelScale) - (this.canvas.height / 2)) / this.pixelScale;
+        return (y + (this.drawY() * this.pixelScale) - (this.canvas.height / 2)) / this.pixelScale;
     }
 
     public update(target_x: number, target_y: number, deltaTime: number): void {

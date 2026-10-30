@@ -233,8 +233,9 @@ export function drawCloudField(ctx: CanvasRenderingContext2D, cam: Camera, timeS
         return;
     }
     ctx.imageSmoothingEnabled = false;
-    const yLo = cam.posY * SMALL_PARALLAX - 80;
-    const yHi = cam.posY * LARGE_PARALLAX + height + 80;
+    const camY = Math.round(cam.posY);
+    const yLo = camY * SMALL_PARALLAX - 80;
+    const yHi = camY * LARGE_PARALLAX + height + 80;
     const band0 = Math.floor(yLo / BAND) - 1;
     const band1 = Math.ceil(yHi / BAND) + 1;
     for (let band = band0; band <= band1; band++) {
@@ -245,7 +246,7 @@ export function drawCloudField(ctx: CanvasRenderingContext2D, cam: Camera, timeS
             const driftAmp = info.tier === "large" ? Math.max(2, Math.round(cloud.drift * 0.5)) : cloud.drift;
             const drift = Math.round(Math.sin(timeSeconds * 0.045 * (cloud.drift / 6) + cloud.phase) * driftAmp);
             const bob = info.tier === "large" ? 0 : Math.round(Math.sin(timeSeconds * 0.12 + cloud.phase));
-            const viewY = cam.posY * info.parallax;
+            const viewY = camY * info.parallax;
             const y = Math.round(cloud.y - viewY + bob);
             let x: number;
             if (info.tier === "small") {
