@@ -93,7 +93,10 @@ const HEAD_SPRITE: readonly string[] = [
     ".kkkkhhh",
 ];
 
-/** Shirt with the pack on the back (left when the face looks right). */
+/**
+ * Shirt, pack, and the seat of the breeches. The anchor is the pelvis.
+ * Rows below it are the hip, so the thighs start inside the torso.
+ */
 const TORSO_SPRITE: readonly string[] = [
     "..SSSs.",
     "..SSSs.",
@@ -105,7 +108,11 @@ const TORSO_SPRITE: readonly string[] = [
     "RRRSSs.",
     ".RRRSs.",
     "..RRSs.",
-    "...SSs.",
+    "..PPPPP",
+    ".PPPPPP",
+    "PPPPPPP",
+    "PPPPPPP",
+    ".PPPPP.",
 ];
 
 const UPPER_ARM_SPRITE: readonly string[] = [
@@ -120,16 +127,22 @@ const FOREARM_SPRITE: readonly string[] = [
     "ssssGGGG",
 ];
 
+/** Knee-length breeches. Wider than the shin, hem at the knee. */
 const THIGH_SPRITE: readonly string[] = [
-    "ppppppppK",
-    "PPPPPPPPK",
-    "ppppppppK",
+    ".ppppppp",
+    "Pppppppp",
+    "pppppppK",
+    "Pppppppp",
+    ".ppppppp",
 ];
 
+/** Sock below the hem, then the boot. Narrower than the thigh. */
 const SHIN_SPRITE: readonly string[] = [
-    "ppppppDDD",
-    "PPPPPPDDD",
-    "ppppppBBB",
+    ".ssssDDDD",
+    "sssssDDDD",
+    "sssssDDDB",
+    "sssssDDDD",
+    ".ssssDDDD",
 ];
 
 const GLOVE_TIP: readonly string[] = [
@@ -139,9 +152,10 @@ const GLOVE_TIP: readonly string[] = [
 ];
 
 const BOOT_TIP: readonly string[] = [
-    "DDD",
-    "DDD",
-    "BBB",
+    ".DDD.",
+    "DDDDD",
+    "DDDDD",
+    "BBBBB",
 ];
 
 export interface Point {
@@ -473,6 +487,43 @@ function block(buf: Uint8Array, width: number, height: number, x: number, y: num
     }
 }
 
+/** Wide filled band. `radius` 2 is about five pixels across. */
+function band(
+    buf: Uint8Array,
+    width: number,
+    height: number,
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+    radius: number,
+    color: number,
+): void {
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const steps = Math.max(Math.abs(dx), Math.abs(dy), 1);
+    let nx = -dy;
+    let ny = dx;
+    const nlen = Math.hypot(nx, ny) || 1;
+    nx /= nlen;
+    ny /= nlen;
+    for (let i = 0; i <= steps; i++) {
+        const x = x0 + (dx * i) / steps;
+        const y = y0 + (dy * i) / steps;
+        for (let t = -radius; t <= radius; t++) {
+            plot(buf, width, height, Math.round(x + nx * t), Math.round(y + ny * t), color);
+        }
+    }
+}
+
+function backup(joint: Point, toward: Point, amount: number): Point {
+    const dx = toward.x - joint.x;
+    const dy = toward.y - joint.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const step = Math.min(amount, len);
+    return { x: joint.x + (dx / len) * step, y: joint.y + (dy / len) * step };
+}
+
 function along(from: Point, to: Point, origin: Point, length: number): Point {
     const dx = to.x - from.x;
     const dy = to.y - from.y;
@@ -661,9 +712,9 @@ function paint(buf: Uint8Array, width: number, height: number, points: ClimberPo
     const torsoAngle = Math.atan2(tdx, -tdy);
     const headAngle = latchAngle(latch, "head", Math.atan2(head.x - neck.x, -(head.y - neck.y)));
 
-    ribbon(buf, width, height, ...pair(into(buttocks), into(pelvis)), PANTS);
     ribbon(buf, width, height, ...pair(into(pelvis), into(neck)), SHIRT);
     ribbon(buf, width, height, ...pair(into(neck), into(head)), SHIRT);
+    band(buf, width, height, ...pair(into(pelvis), into(buttocks)), 2, PANTS);
 
     const order = [0, 1].sort((a, b) => limbCross(tdx, tdy, neck, elbows[a]!) - limbCross(tdx, tdy, neck, elbows[b]!));
     for (const side of order) {
@@ -673,24 +724,25 @@ function paint(buf: Uint8Array, width: number, height: number, points: ClimberPo
         const foot = feet[side]!;
         const armLen = Math.max(2, Math.round(Math.hypot(elbow.x - neck.x, elbow.y - neck.y)));
         const foreLen = Math.max(2, Math.round(Math.hypot(hand.x - elbow.x, hand.y - elbow.y)));
-        const thighLen = Math.max(2, Math.round(Math.hypot(knee.x - buttocks.x, knee.y - buttocks.y)));
+        const thighRoot = backup(buttocks, pelvis, 4);
+        const thighLen = Math.max(2, Math.round(Math.hypot(knee.x - thighRoot.x, knee.y - thighRoot.y)));
         const shinLen = Math.max(2, Math.round(Math.hypot(foot.x - knee.x, foot.y - knee.y)));
-        // The shaft follows the snapped endpoints exactly, so the sprite
-        // lies on the bone instead of stepping to a coarser heading.
-        const thighAngle = Math.atan2(knee.y - buttocks.y, knee.x - buttocks.x);
+        const thighAngle = Math.atan2(knee.y - thighRoot.y, knee.x - thighRoot.x);
         const shinAngle = Math.atan2(foot.y - knee.y, foot.x - knee.x);
         const upperAngle = Math.atan2(elbow.y - neck.y, elbow.x - neck.x);
         const foreAngle = Math.atan2(hand.y - elbow.y, hand.x - elbow.x);
+        const intoThigh = into(backup(buttocks, knee, 3));
+        band(buf, width, height, ...pair(into(buttocks), intoThigh), 2, PANTS);
         ribbon(buf, width, height, ...pair(into(buttocks), into(knee)), PANTS);
-        ribbon(buf, width, height, ...pair(into(knee), into(foot)), PANTS);
+        ribbon(buf, width, height, ...pair(into(knee), into(foot)), SHIRT_SHADE);
         ribbon(buf, width, height, ...pair(into(neck), into(elbow)), SHIRT);
         ribbon(buf, width, height, ...pair(into(elbow), into(hand)), SHIRT);
-        blitStamp(buf, width, height, cachedStamp("thigh", THIGH_SPRITE, 0, 1, thighAngle, false, thighLen), buttocks.x, buttocks.y, originX, originY);
-        blitStamp(buf, width, height, cachedStamp("shin", SHIN_SPRITE, 0, 1, shinAngle, false, shinLen), knee.x, knee.y, originX, originY);
+        blitStamp(buf, width, height, cachedStamp("thigh", THIGH_SPRITE, 0, 2, thighAngle, false, thighLen), thighRoot.x, thighRoot.y, originX, originY);
+        blitStamp(buf, width, height, cachedStamp("shin", SHIN_SPRITE, 0, 2, shinAngle, false, shinLen), knee.x, knee.y, originX, originY);
         blitStamp(buf, width, height, cachedStamp("upper", UPPER_ARM_SPRITE, 0, 1, upperAngle, false, armLen), neck.x, neck.y, originX, originY);
         blitStamp(buf, width, height, cachedStamp("fore", FOREARM_SPRITE, 0, 1, foreAngle, false, foreLen), elbow.x, elbow.y, originX, originY);
         blitStamp(buf, width, height, cachedStamp("glove", GLOVE_TIP, 1, 1, foreAngle, false), hand.x, hand.y, originX, originY);
-        blitStamp(buf, width, height, cachedStamp("boot", BOOT_TIP, 1, 1, shinAngle, false), foot.x, foot.y, originX, originY);
+        blitStamp(buf, width, height, cachedStamp("boot", BOOT_TIP, 2, 1, shinAngle, false), foot.x, foot.y, originX, originY);
         block(buf, width, height, elbow.x - originX, elbow.y - originY, SHIRT_SHADE);
         block(buf, width, height, knee.x - originX, knee.y - originY, KNEE);
     }

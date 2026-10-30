@@ -465,6 +465,16 @@ describe("climber silhouette", () => {
         }
     });
 
+    it("joins each thigh to the torso across at least three pixels", () => {
+        for (const pose of STUDY_POSES) {
+            const drawn = drawnClimberPoints(pose);
+            const raster = rasterClimber(pose);
+            for (const knee of drawn.knees) {
+                expect(hipJoinWidth(raster, drawn.buttocks, drawn.pelvis, knee)).toBeGreaterThanOrEqual(3);
+            }
+        }
+    });
+
     it("keeps a bent knee, a boot, an elbow, and a glove without stretching past 15%", () => {
         const gap = (a: { x: number; y: number }, b: { x: number; y: number }): number => Math.hypot(a.x - b.x, a.y - b.y);
         const offLine = (point: { x: number; y: number }, a: { x: number; y: number }, b: { x: number; y: number }): number => {
@@ -746,6 +756,40 @@ describe("climber silhouette", () => {
         expect(again).toBe(first);
     });
 });
+
+function hipJoinWidth(
+    raster: ClimberRaster,
+    buttocks: { x: number; y: number },
+    pelvis: { x: number; y: number },
+    knee: { x: number; y: number },
+): number {
+    const samples = [
+        buttocks,
+        { x: buttocks.x + (knee.x - buttocks.x) * 0.2, y: buttocks.y + (knee.y - buttocks.y) * 0.2 },
+        { x: buttocks.x + (pelvis.x - buttocks.x) * 0.5, y: buttocks.y + (pelvis.y - buttocks.y) * 0.5 },
+    ];
+    let widest = 0;
+    const dx = knee.x - buttocks.x;
+    const dy = knee.y - buttocks.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const px = -dy / len;
+    const py = dx / len;
+    for (const center of samples) {
+        let count = 0;
+        for (let step = -6; step <= 6; step++) {
+            const x = Math.round(center.x + px * step) - raster.originX;
+            const y = Math.round(center.y + py * step) - raster.originY;
+            if (x < 0 || y < 0 || x >= raster.width || y >= raster.height) {
+                continue;
+            }
+            if ((raster.indices[y * raster.width + x] ?? 0) !== 0) {
+                count += 1;
+            }
+        }
+        widest = Math.max(widest, count);
+    }
+    return widest;
+}
 
 function worldPixels(raster: ClimberRaster): string {
     const marks: string[] = [];
