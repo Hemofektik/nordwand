@@ -461,15 +461,52 @@ describe("climber silhouette", () => {
         }
     });
 
-    it("puts the drawn hands and feet on the physics grips", () => {
+    it("keeps a bent knee, a boot, an elbow, and a glove without stretching past 15%", () => {
         const gap = (a: { x: number; y: number }, b: { x: number; y: number }): number => Math.hypot(a.x - b.x, a.y - b.y);
+        const offLine = (point: { x: number; y: number }, a: { x: number; y: number }, b: { x: number; y: number }): number => {
+            const dx = b.x - a.x;
+            const dy = b.y - a.y;
+            const len = Math.hypot(dx, dy) || 1;
+            return Math.abs(dx * (a.y - point.y) - dy * (a.x - point.x)) / len;
+        };
         for (const pose of STUDY_POSES) {
             const drawn = drawnClimberPoints(pose);
-            expect(gap(drawn.pelvis, pose.pelvis)).toBeLessThanOrEqual(1);
-            expect(gap(drawn.neck, drawn.pelvis)).toBeCloseTo(11, 0);
+            const raster = rasterClimber(pose);
+            expect(gap(drawn.pelvis, pose.pelvis)).toBeLessThanOrEqual(4.05);
+            expect(gap(drawn.neck, drawn.pelvis)).toBeGreaterThan(9);
+            expect(gap(drawn.neck, drawn.pelvis)).toBeLessThan(13);
+            let boots = 0;
+            let gloves = 0;
+            let knees = 0;
+            for (const value of raster.indices) {
+                if (value === 9 || value === 10) {
+                    boots += 1;
+                }
+                if (value === 18 || value === 19) {
+                    gloves += 1;
+                }
+                if (value === 20) {
+                    knees += 1;
+                }
+            }
+            expect(boots).toBeGreaterThan(8);
+            expect(gloves).toBeGreaterThan(4);
+            expect(knees).toBeGreaterThan(2);
             for (let side = 0; side < 2; side++) {
-                expect(gap(drawn.hands[side]!, pose.hands[side]!)).toBeLessThanOrEqual(1);
-                expect(gap(drawn.feet[side]!, pose.feet[side]!)).toBeLessThanOrEqual(1);
+                const thigh = gap(drawn.buttocks, drawn.knees[side]!);
+                const shin = gap(drawn.knees[side]!, drawn.feet[side]!);
+                const upper = gap(drawn.neck, drawn.elbows[side]!);
+                const fore = gap(drawn.elbows[side]!, drawn.hands[side]!);
+                expect(thigh).toBeGreaterThan(6);
+                expect(thigh).toBeLessThanOrEqual(8 * 1.15 + 0.35);
+                expect(shin).toBeGreaterThan(6);
+                expect(shin).toBeLessThanOrEqual(8 * 1.15 + 0.35);
+                expect(upper).toBeGreaterThan(5);
+                expect(upper).toBeLessThanOrEqual(7 * 1.15 + 0.35);
+                expect(fore).toBeGreaterThan(4);
+                expect(fore).toBeLessThanOrEqual(6 * 1.15 + 0.35);
+                expect(offLine(drawn.knees[side]!, drawn.buttocks, drawn.feet[side]!)).toBeGreaterThan(1.5);
+                expect(offLine(drawn.elbows[side]!, drawn.neck, drawn.hands[side]!)).toBeGreaterThan(1.5);
             }
         }
     });

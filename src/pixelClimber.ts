@@ -2,10 +2,11 @@ import type { Camera } from "./Camera.ts";
 import type { Skeleton } from "./Skeleton.ts";
 
 /**
- * The climber is filled in logical pixels. Bone directions come from the
- * physics joints, but the drawn lengths are the mockup's: about 40 pixels
- * from helmet to boot, not the ragdoll's 53. A capsule per bone and a disc
- * at each joint, the same width as that limb. No separate outline.
+ * The climber is filled in logical pixels. The torso and head stay at the
+ * mockup's lengths. Arms and legs keep a thigh and shin (or upper arm and
+ * forearm) of about 8 and 8, or 7 and 6, and may stretch by at most 15%.
+ * The knee and elbow always bend. Hands and feet stop short of a physics
+ * grip they cannot reach. No separate outline.
  */
 
 const PALETTE = [
@@ -18,15 +19,19 @@ const PALETTE = [
     "#22260d",
     "#e7a96c",
     "#c48a52",
-    "#1b1a15",
-    "#3a3228",
-    "#6b4a32",
-    "#4a3022",
+    "#6b3a22",
+    "#2a140c",
+    "#4a2c1a",
+    "#2e1a10",
     "#ac6900",
     "#995d00",
     "#daffff",
     "#21548f",
     "#de7947",
+    "#5c331c",
+    "#3a2012",
+    "#6a7a38",
+    "#8a5a32",
 ];
 
 const SHIRT = 2;
@@ -36,7 +41,7 @@ const PANTS = 5;
 const PANTS_DARK = 6;
 const SKIN = 7;
 const BOOT = 9;
-const BOOT_SHADE = 10;
+const BOOT_SOLE = 10;
 const PACK = 11;
 const PACK_DARK = 12;
 const HELMET = 13;
@@ -44,6 +49,10 @@ const HELMET_DARK = 14;
 const LAMP = 15;
 const EYE = 16;
 const CHEEK = 17;
+const GLOVE = 18;
+const GLOVE_DARK = 19;
+const KNEE = 20;
+const STRAP = 21;
 
 /**
  * Torso and head stay at the mockup's lengths. Arms and legs prefer these
@@ -67,8 +76,6 @@ const TORSO = 2.35;
 const NECK_R = 1.35;
 const PACK_R = 1.75;
 const HEAD_R = 2.3;
-const HAND_R = 1.05;
-const BOOT_R = 1.45;
 
 const HEAD: readonly string[] = [
     ".HHHH..",
@@ -284,10 +291,22 @@ function clampUnit(value: number): number {
     return value;
 }
 
+const MAX_STRETCH = 1.15;
+/** How far the knee or elbow sits off the straight line, so the joint stays visible. */
+const MIN_BEND = 2.4;
+
+function jointOffset(upper: number, lower: number, dist: number): number {
+    if (dist < 1e-4) {
+        return upper;
+    }
+    const cos = clampUnit((upper * upper + dist * dist - lower * lower) / (2 * upper * dist));
+    return upper * Math.sqrt(Math.max(0, 1 - cos * cos));
+}
+
 /**
- * Two-bone chain from `root` to `target`. Preferred lengths stretch or shrink
- * together when the target is outside their reach, so the end sits on `target`.
- * The joint bends toward `pole` (the physics elbow or knee).
+ * Two-bone chain from `root` toward `target`. Lengths stay near the mockup
+ * (at most 15% longer). The joint bends toward `pole` and is never pulled
+ * straight. If the grip is still out of reach, the end stops short.
  */
 function solveTwoBone(root: Point, target: Point, pole: Point, lenA: number, lenB: number): { joint: Point; end: Point } {
     const dx = target.x - root.x;
@@ -295,22 +314,40 @@ function solveTwoBone(root: Point, target: Point, pole: Point, lenA: number, len
     const dist = Math.hypot(dx, dy);
     let upper = lenA;
     let lower = lenB;
-    if (dist > upper + lower) {
-        const scale = dist / (upper + lower);
-        upper *= scale;
-        lower *= scale;
-    } else if (dist < Math.abs(upper - lower)) {
-        const scale = dist / (upper + lower);
+    if (!(dist > 1e-4)) {
+        const vx = pole.x - root.x;
+        const vy = pole.y - root.y;
+        const vl = Math.hypot(vx, vy) || 1;
+        return {
+            joint: { x: root.x + (-vy / vl) * upper, y: root.y + (vx / vl) * upper },
+            end: { x: root.x, y: root.y },
+        };
+    }
+    const reach = dist > lenA + lenB ? Math.min(dist, (lenA + lenB) * MAX_STRETCH) : dist;
+    if (reach > lenA + lenB) {
+        const scale = reach / (lenA + lenB);
         upper *= scale;
         lower *= scale;
     }
-    if (dist < 1e-4) {
-        return { joint: { x: root.x + upper, y: root.y }, end: { x: target.x, y: target.y } };
+    let use = Math.min(dist, upper + lower);
+    if (jointOffset(upper, lower, use) < MIN_BEND) {
+        let lo = Math.abs(upper - lower) + 0.4;
+        let hi = use;
+        for (let i = 0; i < 14; i++) {
+            const mid = (lo + hi) / 2;
+            if (jointOffset(upper, lower, mid) < MIN_BEND) {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        use = lo;
     }
-    const cos = clampUnit((upper * upper + dist * dist - lower * lower) / (2 * upper * dist));
-    const sin = Math.sqrt(Math.max(0, 1 - cos * cos));
     const ux = dx / dist;
     const uy = dy / dist;
+    const end = { x: root.x + ux * use, y: root.y + uy * use };
+    const cos = clampUnit((upper * upper + use * use - lower * lower) / (2 * upper * use));
+    const sin = Math.sqrt(Math.max(0, 1 - cos * cos));
     let px = -uy;
     let py = ux;
     const vx = pole.x - root.x;
@@ -324,7 +361,7 @@ function solveTwoBone(root: Point, target: Point, pole: Point, lenA: number, len
             x: root.x + ux * upper * cos + px * upper * sin,
             y: root.y + uy * upper * cos + py * upper * sin,
         },
-        end: { x: target.x, y: target.y },
+        end,
     };
 }
 
@@ -333,8 +370,14 @@ function solveTwoBone(root: Point, target: Point, pole: Point, lenA: number, len
  * physics grips. The pelvis stays on the physics pelvis, which is where the
  * rope harness attaches.
  */
+const MAX_BODY_SHIFT = 4;
+
 export function drawnClimberPoints(points: ClimberPoints): ClimberPoints {
-    const pelvis = points.pelvis;
+    const fx = (points.feet[0].x + points.feet[1].x) / 2 - points.pelvis.x;
+    const fy = (points.feet[0].y + points.feet[1].y) / 2 - points.pelvis.y;
+    const fl = Math.hypot(fx, fy) || 1;
+    const shift = Math.min(MAX_BODY_SHIFT, fl);
+    const pelvis = { x: points.pelvis.x + (fx / fl) * shift, y: points.pelvis.y + (fy / fl) * shift };
     const neck = along(points.pelvis, points.neck, pelvis, NECK_LEN);
     const back = along(points.pelvis, points.back, pelvis, BACK_LEN);
     const head = along(points.neck, points.head, neck, HEAD_LEN);
@@ -382,9 +425,10 @@ function paint(buf: Uint8Array, width: number, height: number, points: ClimberPo
         px = -px;
         py = -py;
     }
-    const pack = { x: back.x + px * 3.3, y: back.y + py * 3.3 };
-    fillCapsule(buf, width, height, pack.x - ux * 2.4, pack.y - uy * 2.4, pack.x + ux * 2.2, pack.y + uy * 2.2, PACK_R, PACK, PACK_DARK);
-    fillCapsule(buf, width, height, pack.x + ux * 2.2, pack.y + uy * 2.2, neck.x + px * 0.8, neck.y + py * 0.8, 0.85, PACK_DARK, PACK_DARK);
+    const pack = { x: back.x + px * 4.2, y: back.y + py * 4.2 };
+    fillCapsule(buf, width, height, pack.x - ux * 3.1, pack.y - uy * 3.1, pack.x + ux * 2.6, pack.y + uy * 2.6, PACK_R + 0.35, PACK, PACK_DARK);
+    fillCapsule(buf, width, height, pack.x + ux * 2.4, pack.y + uy * 2.4, neck.x + px * 1.3, neck.y + py * 1.3, 0.8, STRAP, STRAP);
+    fillCapsule(buf, width, height, pack.x + ux * 1.2, pack.y + uy * 1.2, neck.x - px * 0.6, neck.y - py * 0.6, 0.7, STRAP, STRAP);
 
     for (let side = 0; side < 2; side++) {
         const knee = knees[side]!;
@@ -393,12 +437,33 @@ function paint(buf: Uint8Array, width: number, height: number, points: ClimberPo
         const deep = side === 0 ? PANTS_DARK : PANTS;
         fillCapsule(buf, width, height, buttocks.x, buttocks.y, knee.x, knee.y, THIGH, pants, deep);
         fillCapsule(buf, width, height, knee.x, knee.y, foot.x, foot.y, SHIN, pants, deep);
-        fillDisc(buf, width, height, knee.x, knee.y, THIGH, pants);
+        fillDisc(buf, width, height, knee.x, knee.y, THIGH + 0.35, KNEE);
         const sx = foot.x - knee.x;
         const sy = foot.y - knee.y;
         const sl = Math.hypot(sx, sy) || 1;
-        fillDisc(buf, width, height, foot.x, foot.y, BOOT_R, BOOT);
-        fillCapsule(buf, width, height, foot.x, foot.y, foot.x - (sx / sl) * 1.2, foot.y - (sy / sl) * 1.2, BOOT_R, BOOT, BOOT_SHADE);
+        const ux = sx / sl;
+        const uy = sy / sl;
+        let soleX = -uy;
+        let soleY = ux;
+        if (soleY < 0) {
+            soleX = -soleX;
+            soleY = -soleY;
+        }
+        const heel = { x: foot.x - ux * 1.1, y: foot.y - uy * 1.1 };
+        const toe = { x: foot.x + ux * 2.4, y: foot.y + uy * 2.4 };
+        fillCapsule(buf, width, height, heel.x, heel.y, toe.x, toe.y, 1.35, BOOT, BOOT);
+        fillCapsule(
+            buf,
+            width,
+            height,
+            heel.x + soleX * 1.15,
+            heel.y + soleY * 1.15,
+            toe.x + soleX * 1.15,
+            toe.y + soleY * 1.15,
+            0.65,
+            BOOT_SOLE,
+            BOOT_SOLE,
+        );
     }
 
     fillCapsule(buf, width, height, buttocks.x, buttocks.y, pelvis.x, pelvis.y, TORSO, PANTS, PANTS_DARK);
@@ -415,8 +480,11 @@ function paint(buf: Uint8Array, width: number, height: number, points: ClimberPo
         const hand = hands[side]!;
         fillCapsule(buf, width, height, neck.x, neck.y, elbow.x, elbow.y, ARM, SHIRT, SHIRT_SHADE);
         fillCapsule(buf, width, height, elbow.x, elbow.y, hand.x, hand.y, ARM, SHIRT, SHIRT_SHADE);
-        fillDisc(buf, width, height, elbow.x, elbow.y, ARM, SHIRT);
-        fillDisc(buf, width, height, hand.x, hand.y, HAND_R, SKIN);
+        fillDisc(buf, width, height, elbow.x, elbow.y, ARM + 0.45, SHIRT_DEEP);
+        const hx = hand.x - elbow.x;
+        const hy = hand.y - elbow.y;
+        const hl = Math.hypot(hx, hy) || 1;
+        fillCapsule(buf, width, height, hand.x - (hx / hl) * 0.4, hand.y - (hy / hl) * 0.4, hand.x + (hx / hl) * 2.2, hand.y + (hy / hl) * 2.2, 1.25, GLOVE, GLOVE_DARK);
     }
 
     fillDisc(buf, width, height, head.x, head.y, HEAD_R, HELMET);
