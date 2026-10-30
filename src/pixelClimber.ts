@@ -35,7 +35,6 @@ const SHIRT_DEEP = 4;
 const PANTS = 5;
 const PANTS_DARK = 6;
 const SKIN = 7;
-const SKIN_SHADE = 8;
 const BOOT = 9;
 const BOOT_SHADE = 10;
 const PACK = 11;
@@ -47,9 +46,9 @@ const EYE = 16;
 const CHEEK = 17;
 
 /**
- * Drawn lengths, in logical pixels, measured on the mockup plate
- * (helmet top y=217 to the standing boot y=256, native 640×420).
- * Physics stays at body 24, arm 20, leg 24.
+ * Torso and head stay at the mockup's lengths. Arms and legs prefer these
+ * lengths too, then scale together so the hand and foot land on the physics
+ * grip. Physics itself stays body 24, arm 20, leg 24.
  */
 const NECK_LEN = 11;
 const BACK_LEN = 6;
@@ -275,34 +274,90 @@ function along(from: Point, to: Point, origin: Point, length: number): Point {
     return { x: origin.x + (dx / dist) * length, y: origin.y + (dy / dist) * length };
 }
 
-/** Physics directions, mockup lengths. The pelvis stays on the physics pelvis. */
-function mockupPoints(points: ClimberPoints): ClimberPoints {
+function clampUnit(value: number): number {
+    if (value < -1) {
+        return -1;
+    }
+    if (value > 1) {
+        return 1;
+    }
+    return value;
+}
+
+/**
+ * Two-bone chain from `root` to `target`. Preferred lengths stretch or shrink
+ * together when the target is outside their reach, so the end sits on `target`.
+ * The joint bends toward `pole` (the physics elbow or knee).
+ */
+function solveTwoBone(root: Point, target: Point, pole: Point, lenA: number, lenB: number): { joint: Point; end: Point } {
+    const dx = target.x - root.x;
+    const dy = target.y - root.y;
+    const dist = Math.hypot(dx, dy);
+    let upper = lenA;
+    let lower = lenB;
+    if (dist > upper + lower) {
+        const scale = dist / (upper + lower);
+        upper *= scale;
+        lower *= scale;
+    } else if (dist < Math.abs(upper - lower)) {
+        const scale = dist / (upper + lower);
+        upper *= scale;
+        lower *= scale;
+    }
+    if (dist < 1e-4) {
+        return { joint: { x: root.x + upper, y: root.y }, end: { x: target.x, y: target.y } };
+    }
+    const cos = clampUnit((upper * upper + dist * dist - lower * lower) / (2 * upper * dist));
+    const sin = Math.sqrt(Math.max(0, 1 - cos * cos));
+    const ux = dx / dist;
+    const uy = dy / dist;
+    let px = -uy;
+    let py = ux;
+    const vx = pole.x - root.x;
+    const vy = pole.y - root.y;
+    if (px * vx + py * vy < 0) {
+        px = -px;
+        py = -py;
+    }
+    return {
+        joint: {
+            x: root.x + ux * upper * cos + px * upper * sin,
+            y: root.y + uy * upper * cos + py * upper * sin,
+        },
+        end: { x: target.x, y: target.y },
+    };
+}
+
+/**
+ * Torso, head, and hips keep the mockup lengths. Hands and feet are the
+ * physics grips. The pelvis stays on the physics pelvis, which is where the
+ * rope harness attaches.
+ */
+export function drawnClimberPoints(points: ClimberPoints): ClimberPoints {
     const pelvis = points.pelvis;
     const neck = along(points.pelvis, points.neck, pelvis, NECK_LEN);
     const back = along(points.pelvis, points.back, pelvis, BACK_LEN);
     const head = along(points.neck, points.head, neck, HEAD_LEN);
     const buttocks = along(points.pelvis, points.buttocks, pelvis, HIP_LEN);
-    const knees: [Point, Point] = [
-        along(points.buttocks, points.knees[0], buttocks, THIGH_LEN),
-        along(points.buttocks, points.knees[1], buttocks, THIGH_LEN),
-    ];
-    const feet: [Point, Point] = [
-        along(points.knees[0], points.feet[0], knees[0], SHIN_LEN),
-        along(points.knees[1], points.feet[1], knees[1], SHIN_LEN),
-    ];
-    const elbows: [Point, Point] = [
-        along(points.neck, points.elbows[0], neck, UPPER_ARM),
-        along(points.neck, points.elbows[1], neck, UPPER_ARM),
-    ];
-    const hands: [Point, Point] = [
-        along(points.elbows[0], points.hands[0], elbows[0], FOREARM),
-        along(points.elbows[1], points.hands[1], elbows[1], FOREARM),
-    ];
-    return { neck, back, pelvis, buttocks, head, elbows, hands, knees, feet };
+    const leg0 = solveTwoBone(buttocks, points.feet[0], points.knees[0], THIGH_LEN, SHIN_LEN);
+    const leg1 = solveTwoBone(buttocks, points.feet[1], points.knees[1], THIGH_LEN, SHIN_LEN);
+    const arm0 = solveTwoBone(neck, points.hands[0], points.elbows[0], UPPER_ARM, FOREARM);
+    const arm1 = solveTwoBone(neck, points.hands[1], points.elbows[1], UPPER_ARM, FOREARM);
+    return {
+        neck,
+        back,
+        pelvis,
+        buttocks,
+        head,
+        elbows: [arm0.joint, arm1.joint],
+        hands: [arm0.end, arm1.end],
+        knees: [leg0.joint, leg1.joint],
+        feet: [leg0.end, leg1.end],
+    };
 }
 
 function paint(buf: Uint8Array, width: number, height: number, points: ClimberPoints, originX: number, originY: number): void {
-    const posed = mockupPoints(points);
+    const posed = drawnClimberPoints(points);
     const p = (pt: Point): Point => ({ x: pt.x - originX, y: pt.y - originY });
     const neck = p(posed.neck);
     const back = p(posed.back);
@@ -343,7 +398,7 @@ function paint(buf: Uint8Array, width: number, height: number, points: ClimberPo
         const sy = foot.y - knee.y;
         const sl = Math.hypot(sx, sy) || 1;
         fillDisc(buf, width, height, foot.x, foot.y, BOOT_R, BOOT);
-        fillCapsule(buf, width, height, foot.x, foot.y, foot.x + (sx / sl) * 2, foot.y + (sy / sl) * 2, BOOT_R, BOOT, BOOT_SHADE);
+        fillCapsule(buf, width, height, foot.x, foot.y, foot.x - (sx / sl) * 1.2, foot.y - (sy / sl) * 1.2, BOOT_R, BOOT, BOOT_SHADE);
     }
 
     fillCapsule(buf, width, height, buttocks.x, buttocks.y, pelvis.x, pelvis.y, TORSO, PANTS, PANTS_DARK);
@@ -362,10 +417,6 @@ function paint(buf: Uint8Array, width: number, height: number, points: ClimberPo
         fillCapsule(buf, width, height, elbow.x, elbow.y, hand.x, hand.y, ARM, SHIRT, SHIRT_SHADE);
         fillDisc(buf, width, height, elbow.x, elbow.y, ARM, SHIRT);
         fillDisc(buf, width, height, hand.x, hand.y, HAND_R, SKIN);
-        const hx = hand.x - elbow.x;
-        const hy = hand.y - elbow.y;
-        const hl = Math.hypot(hx, hy) || 1;
-        fillCapsule(buf, width, height, hand.x, hand.y, hand.x + (hx / hl) * 1.4, hand.y + (hy / hl) * 1.4, HAND_R, SKIN, SKIN_SHADE);
     }
 
     fillDisc(buf, width, height, head.x, head.y, HEAD_R, HELMET);
@@ -374,12 +425,24 @@ function paint(buf: Uint8Array, width: number, height: number, points: ClimberPo
 }
 
 export function rasterClimber(points: ClimberPoints): ClimberRaster {
+    const drawn = drawnClimberPoints(points);
     const all = [
         points.neck,
         points.back,
         points.pelvis,
         points.buttocks,
         points.head,
+        drawn.neck,
+        drawn.back,
+        drawn.head,
+        drawn.elbows[0],
+        drawn.elbows[1],
+        drawn.hands[0],
+        drawn.hands[1],
+        drawn.knees[0],
+        drawn.knees[1],
+        drawn.feet[0],
+        drawn.feet[1],
         points.elbows[0],
         points.elbows[1],
         points.hands[0],

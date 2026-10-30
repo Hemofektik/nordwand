@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CLOUDS_PER_BAND, cloudInstance, cloudSpriteCount, cloudSpriteInfo } from "../src/cloudSprites.ts";
-import { climberSilhouetteReport, rasterClimber, STUDY_POSES } from "../src/pixelClimber.ts";
+import { climberSilhouetteReport, drawnClimberPoints, rasterClimber, STUDY_POSES } from "../src/pixelClimber.ts";
 import { ROCK_PATCHES, rockPatchPixels } from "../src/rockPatches.ts";
 import { applyRockShade, quantizeEdgeColumn, rockEdgeShade, rockIndexAt, rockPixelForCamera, rockWorldPixel, screenToWorld, worldEdgeColumn, worldPitons, worldToScreen } from "../src/rockTexture.ts";
 import { Wall } from "../src/Wall.ts";
@@ -455,27 +455,22 @@ describe("climber silhouette", () => {
         for (const pose of STUDY_POSES) {
             const report = climberSilhouetteReport(rasterClimber(pose));
             expect(report.body).toBeGreaterThan(40);
-            expect(report.body).toBeLessThan(500);
+            expect(report.body).toBeLessThan(900);
             expect(report.components).toBe(1);
             expect(report.holes).toBe(0);
         }
-        const upright = rasterClimber(STUDY_POSES[0]!);
-        let minY = upright.height;
-        let maxY = 0;
-        for (let i = 0; i < upright.indices.length; i++) {
-            if ((upright.indices[i] ?? 0) === 0) {
-                continue;
-            }
-            const y = Math.floor(i / upright.width);
-            if (y < minY) {
-                minY = y;
-            }
-            if (y > maxY) {
-                maxY = y;
+    });
+
+    it("puts the drawn hands and feet on the physics grips", () => {
+        const gap = (a: { x: number; y: number }, b: { x: number; y: number }): number => Math.hypot(a.x - b.x, a.y - b.y);
+        for (const pose of STUDY_POSES) {
+            const drawn = drawnClimberPoints(pose);
+            expect(gap(drawn.pelvis, pose.pelvis)).toBeLessThanOrEqual(1);
+            expect(gap(drawn.neck, drawn.pelvis)).toBeCloseTo(11, 0);
+            for (let side = 0; side < 2; side++) {
+                expect(gap(drawn.hands[side]!, pose.hands[side]!)).toBeLessThanOrEqual(1);
+                expect(gap(drawn.feet[side]!, pose.feet[side]!)).toBeLessThanOrEqual(1);
             }
         }
-        const span = maxY - minY + 1;
-        expect(span).toBeGreaterThan(32);
-        expect(span).toBeLessThan(48);
     });
 });
