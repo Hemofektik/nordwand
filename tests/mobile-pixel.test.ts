@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { CLOUDS_PER_BAND, cloudInstance, cloudSpriteCount, cloudSpriteInfo } from "../src/cloudSprites.ts";
+import { EGameState } from "../src/Core.ts";
+import { SpringPhysics } from "../src/Physics.ts";
 import { climberSilhouetteReport, drawnClimberPoints, rasterClimber, STUDY_POSES } from "../src/pixelClimber.ts";
+import type { ClimberPoints } from "../src/pixelClimber.ts";
+import { Player } from "../src/Player.ts";
 import { ROCK_PATCHES, rockPatchPixels } from "../src/rockPatches.ts";
 import { applyRockShade, quantizeEdgeColumn, rockEdgeShade, rockIndexAt, rockPixelForCamera, rockWorldPixel, screenToWorld, worldEdgeColumn, worldPitons, worldToScreen } from "../src/rockTexture.ts";
 import { Wall } from "../src/Wall.ts";
@@ -472,7 +476,7 @@ describe("climber silhouette", () => {
         for (const pose of STUDY_POSES) {
             const drawn = drawnClimberPoints(pose);
             const raster = rasterClimber(pose);
-            expect(gap(drawn.pelvis, pose.pelvis)).toBeLessThanOrEqual(4.05);
+            expect(gap(drawn.pelvis, pose.pelvis)).toBeLessThanOrEqual(0.05);
             expect(gap(drawn.neck, drawn.pelvis)).toBeGreaterThan(9);
             expect(gap(drawn.neck, drawn.pelvis)).toBeLessThan(13);
             let boots = 0;
@@ -562,6 +566,113 @@ describe("climber silhouette", () => {
             prevElbow = elbow;
             prevPhysKnee = physKnee;
             prevPhysElbow = physElbow;
+        }
+    });
+
+    it("uses the painted skeleton, so a grip inside that reach meets the hand and the foot", () => {
+        const gap = (a: { x: number; y: number }, b: { x: number; y: number }): number => Math.hypot(a.x - b.x, a.y - b.y);
+        const phys = new SpringPhysics();
+        const wall = new Wall(150, 200, 12345);
+        phys.wall = wall;
+        const player = new Player(phys, wall, 150, 200, EGameState.Game | EGameState.Climbing);
+        const skeleton = player.skeleton;
+        expect(skeleton.bodylength).toBe(15);
+        expect(skeleton.armlength).toBe(14.5);
+        expect(skeleton.leglength).toBe(14);
+        const distance = (index: number): number => phys.distanceConstraints[index]!.distance;
+        expect(distance(skeleton.bodyConstraintIndices[0]!)).toBeCloseTo(4);
+        expect(distance(skeleton.bodyConstraintIndices[1]!)).toBeCloseTo(6);
+        expect(distance(skeleton.bodyConstraintIndices[2]!)).toBeCloseTo(5);
+        expect(distance(skeleton.bodyConstraintIndices[3]!)).toBeCloseTo(4);
+        expect(distance(skeleton.leftArmConstraintIndices[0]!)).toBeCloseTo(7.25);
+        expect(distance(skeleton.leftArmConstraintIndices[1]!)).toBeCloseTo(7.25);
+        expect(distance(skeleton.leftLegConstraintIndices[0]!)).toBeCloseTo(7);
+        expect(distance(skeleton.leftLegConstraintIndices[1]!)).toBeCloseTo(7);
+
+        const pose: ClimberPoints = {
+            pelvis: { x: 0, y: 0 },
+            neck: { x: 0, y: -11 },
+            back: { x: 0, y: -6 },
+            buttocks: { x: 0, y: 4 },
+            head: { x: 0, y: -15 },
+            elbows: [
+                { x: 4, y: -14 },
+                { x: 3, y: -8 },
+            ],
+            hands: [
+                { x: 14.5, y: -11 },
+                { x: 6, y: -6 },
+            ],
+            knees: [
+                { x: 4, y: 8 },
+                { x: -3, y: 10 },
+            ],
+            feet: [
+                { x: 0, y: 18 },
+                { x: 6, y: 12 },
+            ],
+        };
+        const drawn = drawnClimberPoints(pose);
+        for (let side = 0; side < 2; side++) {
+            expect(gap(drawn.hands[side]!, pose.hands[side]!)).toBeLessThanOrEqual(2);
+            expect(gap(drawn.feet[side]!, pose.feet[side]!)).toBeLessThanOrEqual(2);
+            expect(flexion(drawn.neck, drawn.elbows[side]!, drawn.hands[side]!)).toBeGreaterThan(20);
+            expect(flexion(drawn.buttocks, drawn.knees[side]!, drawn.feet[side]!)).toBeGreaterThan(70);
+        }
+    });
+
+    it("keeps the gloves and boots on the grips while climbing, and stays deterministic", () => {
+        const climb = (): { y: number; gaps: number[] } => {
+            const phys = new SpringPhysics();
+            const wall = new Wall(150, 200, 12345);
+            phys.wall = wall;
+            const player = new Player(phys, wall, 150, 200, EGameState.Game | EGameState.Climbing);
+            const skeleton = player.skeleton;
+            const point = (index: number): { x: number; y: number } => {
+                const state = phys.particleStates[index]!;
+                return { x: state.posX, y: state.posY };
+            };
+            const end = (index: number): { x: number; y: number } => point(phys.distanceConstraints[index]!.particleIndex1);
+            const gap = (a: { x: number; y: number }, b: { x: number; y: number }): number => Math.hypot(a.x - b.x, a.y - b.y);
+            const gaps: number[] = [];
+            let time = 0;
+            const step = 1 / 60;
+            for (let frame = 0; frame < 240; frame++) {
+                time += step;
+                wall.minPosYVisible = point(skeleton.pelvisParticleIndex).y - 800;
+                wall.update(step);
+                phys.update(step);
+                player.update(time, step);
+                if (frame > 70 && frame % 45 === 0) {
+                    player.tryClimb();
+                }
+                if (frame < 90 || frame % 10 !== 0) {
+                    continue;
+                }
+                const hands = skeleton.handParticleIndex.map(point);
+                const feet = skeleton.footParticleIndex.map(point);
+                const drawn = drawnClimberPoints({
+                    neck: point(skeleton.neckParticleIndex),
+                    back: point(skeleton.backParticleIndex),
+                    pelvis: point(skeleton.pelvisParticleIndex),
+                    buttocks: point(skeleton.buttocksParticleIndex),
+                    head: end(skeleton.bodyConstraintIndices[3]!),
+                    elbows: [end(skeleton.leftArmConstraintIndices[0]!), end(skeleton.rightArmConstraintIndices[0]!)],
+                    hands: [hands[0]!, hands[1]!],
+                    knees: [end(skeleton.leftLegConstraintIndices[0]!), end(skeleton.rightLegConstraintIndices[0]!)],
+                    feet: [feet[0]!, feet[1]!],
+                });
+                gaps.push(gap(drawn.hands[0]!, hands[0]!), gap(drawn.hands[1]!, hands[1]!), gap(drawn.feet[0]!, feet[0]!), gap(drawn.feet[1]!, feet[1]!));
+            }
+            return { y: point(skeleton.pelvisParticleIndex).y, gaps };
+        };
+        const first = climb();
+        const second = climb();
+        expect(second.y).toBe(first.y);
+        expect(second.gaps).toEqual(first.gaps);
+        expect(first.y).toBeLessThan(270);
+        for (const gap of first.gaps) {
+            expect(gap).toBeLessThanOrEqual(2.5);
         }
     });
 });

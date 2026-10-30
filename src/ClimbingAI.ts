@@ -122,7 +122,9 @@ function updateLimbAngles(deltaTime: number, skeleton: Skeleton, wall: Wall, rad
                 const deltaY = targetAnchor.posY - handParticle.posY;
                 const distanceSqr = deltaX * deltaX + deltaY * deltaY;
 
-                if (distanceSqr < 3.0) {
+                // Was 3 (~1.7px). The shorter arm settles about 2.8px from a
+                // hold it can already reach, so the grab never closed.
+                if (distanceSqr < 3.5 * 3.5) {
                     fc.isEnabled = true;
                     fc.wallAnchorIndex = targetAnchor.index;
                     fc.posX = targetAnchor.posX;
@@ -427,7 +429,9 @@ export class ClimbingAI {
         this.climbingPosX = this.skeleton.phys.particleStates[this.skeleton.pelvisParticleIndex]!.posX;
         this.climbingPosY = this.skeleton.phys.particleStates[this.skeleton.pelvisParticleIndex]!.posY;
 
-        this.maximumArmReachDistanceSqr = Math.pow(this.skeleton.armlength * 0.95, 2); // reduced to be safe
-        this.maximumLegReachDistanceSqr = Math.pow(this.skeleton.leglength * 0.95, 2); // reduced to be safe
+        // Full bone length. The old 0.95 margin left the shorter arm unable to
+        // take the next hold (about 12.6px away, just past 0.95 * 13).
+        this.maximumArmReachDistanceSqr = Math.pow(this.skeleton.armlength, 2);
+        this.maximumLegReachDistanceSqr = Math.pow(this.skeleton.leglength, 2);
     }
 }

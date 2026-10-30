@@ -71,9 +71,16 @@ export class Skeleton {
 
     public time = 0;
 
-    public bodylength = 24;
-    public armlength = 20;
-    public leglength = 24;
+    /**
+     * Painted proportions, in world pixels. Was body 24, arm 20, leg 24.
+     * The neck, hip, back, and head match the drawn torso. Arm reach 14.5 and
+     * leg reach 14 are the drawn limbs at their minimum bend (elbow 25°, knee
+     * 80°) after at most 15% stretch, so a fully extended grip still meets
+     * the glove and the boot.
+     */
+    public bodylength = 15;
+    public armlength = 14.5;
+    public leglength = 14;
 
     public bodyConstraintIndices: number[] = [];
     public leftArmConstraintIndices: number[] = [];
@@ -175,17 +182,23 @@ export class Skeleton {
         // put skeleton at a position where the left wrist touches the selected anchor
         const armAnchorIndex = anchors[Math.round(anchors.length / 2)]!.index;
         const legAnchorIndex = armAnchorIndex - 8;
+        // Pelvis-to-neck is 11, hip 4, back 6, head 4: the same lengths the
+        // climber is drawn at. The neck starts level with the hand anchor.
+        const neckLen = 11;
+        const hipLen = 4;
+        const backLen = 6;
+        const headLen = 4;
         posX = this.wall.wallAnchors[armAnchorIndex]!.posX - this.armlength * 2.0; // x2 to get enough extra distance
-        posY = this.wall.wallAnchors[armAnchorIndex]!.posY + this.bodylength * 0.7;
+        posY = this.wall.wallAnchors[armAnchorIndex]!.posY + neckLen;
 
-        const buttocksPosY = posY + this.bodylength * 0.3;
-        const neckPosY = posY - this.bodylength * 0.7;
+        const buttocksPosY = posY + hipLen;
+        const neckPosY = posY - neckLen;
 
         const pelvisIndex = createBodyParticle(phys, posX, posY, bodyParticleMass);
         const buttocksIndex = createBodyParticle(phys, posX, buttocksPosY, bodyParticleMass);
-        const backIndex = createBodyParticle(phys, posX, posY - this.bodylength * 0.3, bodyParticleMass);
+        const backIndex = createBodyParticle(phys, posX, posY - backLen, bodyParticleMass);
         const neckIndex = createBodyParticle(phys, posX, neckPosY, bodyParticleMass);
-        const headIndex = createBodyParticle(phys, posX, posY - this.bodylength * 0.9, bodyParticleMass);
+        const headIndex = createBodyParticle(phys, posX, neckPosY - headLen, bodyParticleMass);
 
         this.pelvisParticleIndex = pelvisIndex;
         this.buttocksParticleIndex = buttocksIndex;

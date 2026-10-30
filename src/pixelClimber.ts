@@ -5,11 +5,10 @@ import type { Skeleton } from "./Skeleton.ts";
  * The climber is filled in logical pixels. The torso and head stay at the
  * mockup's lengths. Arms and legs keep a thigh and shin (or upper arm and
  * forearm) of about 8 and 8, or 7 and 6, and may stretch by at most 15%.
- * Elbows stay about 25° from straight and hands tuck 2 pixels toward the
- * chest. Knees stay about 80° from straight in a reach, and bend further
- * when the foot is already near the hip; feet tuck 10 pixels toward the
- * hips. Hands and feet stop short of a physics grip they cannot reach.
- * No separate outline.
+ * Elbows stay at least 25° from straight. Knees stay at least 80° from
+ * straight in a reach, and bend further when the foot is already near the
+ * hip. The physics skeleton is the same size, so the hand and the foot land
+ * on the grip. No separate outline.
  */
 
 const PALETTE = [
@@ -57,9 +56,10 @@ const KNEE = 20;
 const STRAP = 21;
 
 /**
- * Torso and head stay at the mockup's lengths. Arms and legs prefer these
- * lengths too, then scale together so the hand and foot land on the physics
- * grip. Physics itself stays body 24, arm 20, leg 24.
+ * Torso and head stay at the mockup's lengths, and the physics joints use
+ * the same distances (neck 11, hip 4, back 6, head 4). The arm may reach
+ * 14.5 and the leg 14, which is the flexed length plus at most 15% stretch.
+ * Arms and legs may stretch by at most 15%.
  */
 const NECK_LEN = 11;
 const BACK_LEN = 6;
@@ -331,9 +331,14 @@ const MAX_STRETCH = 1.15;
 /** Degrees away from a straight limb. Arms stay mostly extended; knees crouch. */
 const ARM_MIN_FLEXION_DEG = 25;
 const LEG_MIN_FLEXION_DEG = 80;
-/** How far the drawn grip is pulled toward the chest or the hips before the bend. */
-const ARM_TUCK = 2;
-const LEG_TUCK = 10;
+/**
+ * How far the drawn grip is pulled toward the chest or the hips before the
+ * bend. The physics reach is already inside the flexed limb, so this stays
+ * at 0 and the hand and foot sit on the grip. The angle floors still bend
+ * the elbow and the knee.
+ */
+const ARM_TUCK = 0;
+const LEG_TUCK = 0;
 
 function maxReachForFlex(upper: number, lower: number, flexionDeg: number): number {
     const cos = Math.cos((flexionDeg * Math.PI) / 180);
@@ -376,8 +381,11 @@ function solveTwoBone(root: Point, target: Point, side: number, lenA: number, le
             end: { x: root.x, y: root.y },
         };
     }
-    if (dist > lenA + lenB) {
-        const scale = Math.min(dist, (lenA + lenB) * MAX_STRETCH) / (lenA + lenB);
+    // Stretch both bones together, up to 15%, when the grip is past the
+    // flexed reach. The joint stays at least flexionDeg from straight.
+    const naturalFlexed = maxReachForFlex(lenA, lenB, flexionDeg);
+    if (dist > naturalFlexed) {
+        const scale = Math.min(MAX_STRETCH, dist / naturalFlexed);
         upper *= scale;
         lower *= scale;
     }
@@ -408,7 +416,8 @@ function solveTwoBone(root: Point, target: Point, side: number, lenA: number, le
  * physics grips. The pelvis stays on the physics pelvis, which is where the
  * rope harness attaches.
  */
-const MAX_BODY_SHIFT = 4;
+/** The drawn pelvis stays on the physics pelvis, where the rope attaches. */
+const MAX_BODY_SHIFT = 0;
 
 export function drawnClimberPoints(points: ClimberPoints): ClimberPoints {
     const fx = (points.hands[0].x + points.hands[1].x) / 2 - points.pelvis.x;
