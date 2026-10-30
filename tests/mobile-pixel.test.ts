@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CLOUDS_PER_BAND, cloudInstance, cloudSpriteCount, cloudSpriteInfo } from "../src/cloudSprites.ts";
 import { EGameState } from "../src/Core.ts";
 import { SpringPhysics } from "../src/Physics.ts";
-import { climberSilhouetteReport, createPoseLatch, drawnClimberPoints, rasterClimber, STUDY_POSES } from "../src/pixelClimber.ts";
+import { climberSilhouetteReport, createPoseLatch, drawnClimberPoints, latchedHeading, latchedPoint, LIMB_ANGLE_BINS, limbBrushCells, rasterClimber, STUDY_POSES } from "../src/pixelClimber.ts";
 import type { ClimberPoints, ClimberRaster } from "../src/pixelClimber.ts";
 import { Player } from "../src/Player.ts";
 import { ROCK_PATCHES, rockPatchPixels } from "../src/rockPatches.ts";
@@ -465,6 +465,80 @@ describe("climber silhouette", () => {
         }
     });
 
+    it("keeps the shorts at least 3px wide and the shin about 2px at every heading", () => {
+        for (let bin = 0; bin < LIMB_ANGLE_BINS; bin++) {
+            const thigh = brushProfile("thigh", bin, 12);
+            const shin = brushProfile("shin", bin, 10);
+            expect(thigh.min).toBeGreaterThanOrEqual(3);
+            expect(shin.min).toBeGreaterThanOrEqual(2);
+            expect(shin.max).toBeLessThanOrEqual(3);
+        }
+    });
+
+    it("does not let the thigh width flicker during a climb", () => {
+        const phys = new SpringPhysics();
+        const wall = new Wall(150, 200, 12345);
+        phys.wall = wall;
+        const player = new Player(phys, wall, 150, 200, EGameState.Game | EGameState.Climbing);
+        const skeleton = player.skeleton;
+        const point = (index: number): { x: number; y: number } => {
+            const state = phys.particleStates[index]!;
+            return { x: state.posX, y: state.posY };
+        };
+        const end = (index: number): { x: number; y: number } => point(phys.distanceConstraints[index]!.particleIndex1);
+        const widths: number[] = [];
+        const latch = createPoseLatch();
+        let time = 0;
+        const step = 1 / 60;
+        for (let frame = 0; frame < 60 * 60; frame++) {
+            time += step;
+            wall.minPosYVisible = point(skeleton.pelvisParticleIndex).y - 1600;
+            wall.update(step);
+            phys.update(step);
+            player.update(time, step);
+            if (frame > 70 && frame % 45 === 0) {
+                player.tryClimb();
+            }
+            if (frame < 90) {
+                continue;
+            }
+            const points = {
+                neck: point(skeleton.neckParticleIndex),
+                back: point(skeleton.backParticleIndex),
+                pelvis: point(skeleton.pelvisParticleIndex),
+                buttocks: point(skeleton.buttocksParticleIndex),
+                head: end(skeleton.bodyConstraintIndices[3]!),
+                elbows: [end(skeleton.leftArmConstraintIndices[0]!), end(skeleton.rightArmConstraintIndices[0]!)] as const,
+                hands: [point(skeleton.handParticleIndex[0]!), point(skeleton.handParticleIndex[1]!)] as const,
+                knees: [end(skeleton.leftLegConstraintIndices[0]!), end(skeleton.rightLegConstraintIndices[0]!)] as const,
+                feet: [point(skeleton.footParticleIndex[0]!), point(skeleton.footParticleIndex[1]!)] as const,
+            };
+            const drawn = drawnClimberPoints(points);
+            const raster = rasterClimber(points, latch);
+            drawn.knees.forEach((knee, side) => {
+                const hip = latchedPoint(latch, "hip", drawn.buttocks);
+                const pelvis = latchedPoint(latch, "pelvis", drawn.pelvis);
+                const joint = latchedPoint(latch, `k${side}`, knee);
+                const root = backupToward(hip, pelvis, 4);
+                const placed = { x: Math.round(root.x), y: Math.round(root.y) };
+                const raw = Math.atan2(joint.y - root.y, joint.x - root.x);
+                const angle = latchedHeading(latch, `thigh${side}`, raw);
+                const reach = Math.max(3, Math.round(Math.hypot(joint.x - root.x, joint.y - root.y)));
+                const bin = headingBin(angle);
+                const width = brushProfile("thigh", bin, 12).min;
+                const center = pantsRunAlong(raster, placed, angle, Math.max(4, reach - 3));
+                if (center > 0) {
+                    widths.push(width);
+                }
+            });
+        }
+        expect(widths.length).toBeGreaterThan(100);
+        const lo = Math.min(...widths);
+        const hi = Math.max(...widths);
+        expect(hi - lo).toBeLessThanOrEqual(1);
+        expect(lo).toBeGreaterThanOrEqual(3);
+    });
+
     it("joins each thigh to the torso across at least three pixels", () => {
         for (const pose of STUDY_POSES) {
             const drawn = drawnClimberPoints(pose);
@@ -756,6 +830,80 @@ describe("climber silhouette", () => {
         expect(again).toBe(first);
     });
 });
+
+function headingBin(angle: number): number {
+    const steps = LIMB_ANGLE_BINS;
+    let bin = Math.round(angle / ((Math.PI * 2) / steps)) % steps;
+    if (bin < 0) {
+        bin += steps;
+    }
+    return bin;
+}
+
+function backupToward(joint: { x: number; y: number }, toward: { x: number; y: number }, amount: number): { x: number; y: number } {
+    const dx = toward.x - joint.x;
+    const dy = toward.y - joint.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const step = Math.min(amount, len);
+    return { x: joint.x + (dx / len) * step, y: joint.y + (dy / len) * step };
+}
+
+function pantsRunAlong(
+    raster: ClimberRaster,
+    root: { x: number; y: number },
+    angle: number,
+    distance: number,
+): number {
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const cx = root.x + cos * distance;
+    const cy = root.y + sin * distance;
+    const px = -sin;
+    const py = cos;
+    const slice = new Set<number>();
+    for (let dy = -6; dy <= 6; dy++) {
+        for (let dx = -6; dx <= 6; dx++) {
+            const x = Math.round(cx) + dx;
+            const y = Math.round(cy) + dy;
+            const localX = x - raster.originX;
+            const localY = y - raster.originY;
+            if (localX < 0 || localY < 0 || localX >= raster.width || localY >= raster.height) {
+                continue;
+            }
+            const color = raster.indices[localY * raster.width + localX] ?? 0;
+            if (color !== 5 && color !== 6) {
+                continue;
+            }
+            const along = (x - cx) * cos + (y - cy) * sin;
+            if (Math.abs(along) <= 0.75) {
+                slice.add(Math.round((x - cx) * px + (y - cy) * py));
+            }
+        }
+    }
+    return slice.size;
+}
+
+function brushProfile(part: "thigh" | "shin", bin: number, length: number): { min: number; max: number } {
+    const cells = limbBrushCells(part, bin, length);
+    const angle = (bin / LIMB_ANGLE_BINS) * Math.PI * 2;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const px = -sin;
+    const py = cos;
+    let min = 99;
+    let max = 0;
+    for (let station = 2; station <= length - 2; station++) {
+        const slice = new Set<number>();
+        for (const [x, y] of cells) {
+            if (Math.abs(x * cos + y * sin - station) <= 0.75) {
+                slice.add(Math.round(x * px + y * py));
+            }
+        }
+        min = Math.min(min, slice.size);
+        max = Math.max(max, slice.size);
+    }
+    return { min, max };
+}
 
 function hipJoinWidth(
     raster: ClimberRaster,
