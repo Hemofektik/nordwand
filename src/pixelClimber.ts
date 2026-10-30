@@ -13,25 +13,25 @@ const PALETTE = [
     "",
     "",
     "#aba17d",
-    "#8a8264",
+    "#665f46",
     "#665f46",
     "#414722",
     "#22260d",
     "#e7a96c",
     "#c48a52",
-    "#6b3a22",
-    "#2a140c",
-    "#4a2c1a",
-    "#2e1a10",
+    "#2a0d03",
+    "#1b1b16",
+    "#2a0d03",
+    "#1b1b16",
     "#ac6900",
     "#995d00",
     "#daffff",
     "#21548f",
     "#de7947",
-    "#5c331c",
-    "#3a2012",
-    "#6a7a38",
-    "#8a5a32",
+    "#2a0d03",
+    "#1b1b16",
+    "#22260d",
+    "#665f46",
 ];
 
 const SHIRT = 2;
@@ -50,7 +50,6 @@ const LAMP = 15;
 const EYE = 16;
 const CHEEK = 17;
 const GLOVE = 18;
-const GLOVE_DARK = 19;
 const KNEE = 20;
 const STRAP = 21;
 
@@ -74,26 +73,43 @@ const THIGH = 1.55;
 const SHIN = 1.35;
 const TORSO = 2.35;
 const NECK_R = 1.35;
-const PACK_R = 1.75;
 const HEAD_R = 2.3;
 
+/** Traced from climber_ref.png, rope pixels that crossed the face removed. */
 const HEAD: readonly string[] = [
     ".HHHH..",
-    "HHHhLH.",
+    ".HHHLH.",
     "HHkkkkk",
+    "Hkkkkkk",
     ".kkkekh",
     ".kakkka",
     ".kkkhhh",
 ];
 
-const HEAD_INK: Record<string, number> = {
-    h: HELMET_DARK,
-    H: HELMET,
-    L: LAMP,
-    k: SKIN,
-    e: EYE,
-    a: CHEEK,
-};
+const PACK_SPRITE: readonly string[] = [
+    "..RRRRR.",
+    ".RRRRRRR",
+    "RRRRRRRR",
+    "RRRRRRRR",
+    "RRRRRRR.",
+    "RRRRRR..",
+    "RRRRR...",
+    ".RRRR...",
+];
+
+const GLOVE_SPRITE: readonly string[] = [
+    ".GG",
+    "GGG",
+    "GGG",
+    ".GG",
+];
+
+const BOOT_SPRITE: readonly string[] = [
+    ".DD.DD",
+    "DDDDDD",
+    "DDDDDB",
+    "DDD....",
+];
 
 export interface Point {
     x: number;
@@ -176,36 +192,6 @@ function fillDisc(buf: Uint8Array, width: number, height: number, cx: number, cy
     fillCapsule(buf, width, height, cx, cy, cx, cy, radius, fill, fill);
 }
 
-function stamp(
-    buf: Uint8Array,
-    width: number,
-    height: number,
-    rows: readonly string[],
-    ink: Record<string, number>,
-    atX: number,
-    atY: number,
-    originCol: number,
-    originRow: number,
-): void {
-    const ox = Math.round(atX) - originCol;
-    const oy = Math.round(atY) - originRow;
-    for (let row = 0; row < rows.length; row++) {
-        const line = rows[row]!;
-        for (let col = 0; col < line.length; col++) {
-            const color = ink[line[col]!];
-            if (color === undefined) {
-                continue;
-            }
-            const x = ox + col;
-            const y = oy + row;
-            if (x < 0 || y < 0 || x >= width || y >= height) {
-                continue;
-            }
-            buf[y * width + x] = color;
-        }
-    }
-}
-
 function closeHoles(buf: Uint8Array, width: number, height: number): void {
     const outside = new Uint8Array(buf.length);
     const queue: number[] = [];
@@ -270,6 +256,53 @@ function closeHoles(buf: Uint8Array, width: number, height: number): void {
                 buf[i] = color;
                 changed = true;
             }
+        }
+    }
+}
+
+const PART_INK: Record<string, number> = {
+    H: HELMET,
+    h: HELMET_DARK,
+    L: LAMP,
+    k: SKIN,
+    e: EYE,
+    a: CHEEK,
+    R: PACK,
+    B: BOOT_SOLE,
+    S: STRAP,
+    G: GLOVE,
+    D: BOOT,
+};
+
+/** Nearest-neighbour placement. Angle 0 points sprite +x along world +x. */
+function placeSprite(
+    buf: Uint8Array,
+    width: number,
+    height: number,
+    rows: readonly string[],
+    cx: number,
+    cy: number,
+    angle: number,
+    anchorCol: number,
+    anchorRow: number,
+): void {
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    for (let row = 0; row < rows.length; row++) {
+        const line = rows[row]!;
+        for (let col = 0; col < line.length; col++) {
+            const color = PART_INK[line[col]!];
+            if (color === undefined) {
+                continue;
+            }
+            const lx = col - anchorCol;
+            const ly = row - anchorRow;
+            const x = Math.round(cx + cos * lx - sin * ly);
+            const y = Math.round(cy + sin * lx + cos * ly);
+            if (x < 0 || y < 0 || x >= width || y >= height) {
+                continue;
+            }
+            buf[y * width + x] = color;
         }
     }
 }
@@ -425,10 +458,11 @@ function paint(buf: Uint8Array, width: number, height: number, points: ClimberPo
         px = -px;
         py = -py;
     }
-    const pack = { x: back.x + px * 4.2, y: back.y + py * 4.2 };
-    fillCapsule(buf, width, height, pack.x - ux * 3.1, pack.y - uy * 3.1, pack.x + ux * 2.6, pack.y + uy * 2.6, PACK_R + 0.35, PACK, PACK_DARK);
-    fillCapsule(buf, width, height, pack.x + ux * 2.4, pack.y + uy * 2.4, neck.x + px * 1.3, neck.y + py * 1.3, 0.8, STRAP, STRAP);
-    fillCapsule(buf, width, height, pack.x + ux * 1.2, pack.y + uy * 1.2, neck.x - px * 0.6, neck.y - py * 0.6, 0.7, STRAP, STRAP);
+    const pack = { x: back.x + px * 4.5, y: back.y + py * 4.5 };
+    fillCapsule(buf, width, height, pack.x - ux * 3, pack.y - uy * 3, pack.x + ux * 2.4, pack.y + uy * 2.4, 2.1, PACK, PACK_DARK);
+    fillCapsule(buf, width, height, pack.x + ux * 2.2, pack.y + uy * 2.2, neck.x + px * 1.4, neck.y + py * 1.4, 0.75, PACK, PACK);
+    const packUp = Math.atan2(-ux, uy);
+    placeSprite(buf, width, height, PACK_SPRITE, pack.x, pack.y, packUp, 4, 3);
 
     for (let side = 0; side < 2; side++) {
         const knee = knees[side]!;
@@ -443,27 +477,8 @@ function paint(buf: Uint8Array, width: number, height: number, points: ClimberPo
         const sl = Math.hypot(sx, sy) || 1;
         const ux = sx / sl;
         const uy = sy / sl;
-        let soleX = -uy;
-        let soleY = ux;
-        if (soleY < 0) {
-            soleX = -soleX;
-            soleY = -soleY;
-        }
-        const heel = { x: foot.x - ux * 1.1, y: foot.y - uy * 1.1 };
-        const toe = { x: foot.x + ux * 2.4, y: foot.y + uy * 2.4 };
-        fillCapsule(buf, width, height, heel.x, heel.y, toe.x, toe.y, 1.35, BOOT, BOOT);
-        fillCapsule(
-            buf,
-            width,
-            height,
-            heel.x + soleX * 1.15,
-            heel.y + soleY * 1.15,
-            toe.x + soleX * 1.15,
-            toe.y + soleY * 1.15,
-            0.65,
-            BOOT_SOLE,
-            BOOT_SOLE,
-        );
+        fillDisc(buf, width, height, foot.x, foot.y, 1.3, BOOT);
+        placeSprite(buf, width, height, BOOT_SPRITE, foot.x, foot.y, Math.atan2(uy, ux), 1, 1);
     }
 
     fillCapsule(buf, width, height, buttocks.x, buttocks.y, pelvis.x, pelvis.y, TORSO, PANTS, PANTS_DARK);
@@ -483,12 +498,14 @@ function paint(buf: Uint8Array, width: number, height: number, points: ClimberPo
         fillDisc(buf, width, height, elbow.x, elbow.y, ARM + 0.45, SHIRT_DEEP);
         const hx = hand.x - elbow.x;
         const hy = hand.y - elbow.y;
-        const hl = Math.hypot(hx, hy) || 1;
-        fillCapsule(buf, width, height, hand.x - (hx / hl) * 0.4, hand.y - (hy / hl) * 0.4, hand.x + (hx / hl) * 2.2, hand.y + (hy / hl) * 2.2, 1.25, GLOVE, GLOVE_DARK);
+        fillDisc(buf, width, height, hand.x, hand.y, 1.2, GLOVE);
+        placeSprite(buf, width, height, GLOVE_SPRITE, hand.x, hand.y, Math.atan2(hy, hx), 2, 1);
     }
 
     fillDisc(buf, width, height, head.x, head.y, HEAD_R, HELMET);
-    stamp(buf, width, height, HEAD, HEAD_INK, head.x, head.y, 3, 2);
+    const headDx = head.x - neck.x;
+    const headDy = head.y - neck.y;
+    placeSprite(buf, width, height, HEAD, head.x, head.y, Math.atan2(headDx, -headDy), 3, 2);
     closeHoles(buf, width, height);
 }
 
