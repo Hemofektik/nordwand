@@ -507,7 +507,72 @@ describe("climber silhouette", () => {
                 expect(fore).toBeLessThanOrEqual(6 * 1.15 + 0.35);
                 expect(offLine(drawn.knees[side]!, drawn.buttocks, drawn.feet[side]!)).toBeGreaterThan(1.5);
                 expect(offLine(drawn.elbows[side]!, drawn.neck, drawn.hands[side]!)).toBeGreaterThan(1.5);
+                expect(flexion(drawn.buttocks, drawn.knees[side]!, drawn.feet[side]!)).toBeGreaterThan(40);
+                expect(flexion(drawn.neck, drawn.elbows[side]!, drawn.hands[side]!)).toBeGreaterThan(40);
             }
         }
     });
+
+    it("does not flip a bend while the physics joint stays on the same side", () => {
+        const sign = (root: { x: number; y: number }, joint: { x: number; y: number }, end: { x: number; y: number }): number => {
+            const cross = (end.x - root.x) * (joint.y - root.y) - (end.y - root.y) * (joint.x - root.x);
+            if (cross > 0.5) {
+                return 1;
+            }
+            if (cross < -0.5) {
+                return -1;
+            }
+            return 0;
+        };
+        const mix = (a: { x: number; y: number }, b: { x: number; y: number }, t: number): { x: number; y: number } => ({
+            x: a.x + (b.x - a.x) * t,
+            y: a.y + (b.y - a.y) * t,
+        });
+        const from = STUDY_POSES[0]!;
+        const to = STUDY_POSES[1]!;
+        let prevKnee = 0;
+        let prevElbow = 0;
+        let prevPhysKnee = 0;
+        let prevPhysElbow = 0;
+        for (let step = 0; step <= 10; step++) {
+            const t = step / 10;
+            const pose = {
+                neck: mix(from.neck, to.neck, t),
+                back: mix(from.back, to.back, t),
+                pelvis: mix(from.pelvis, to.pelvis, t),
+                buttocks: mix(from.buttocks, to.buttocks, t),
+                head: mix(from.head, to.head, t),
+                elbows: [mix(from.elbows[0], to.elbows[0], t), mix(from.elbows[1], to.elbows[1], t)] as const,
+                hands: [mix(from.hands[0], to.hands[0], t), mix(from.hands[1], to.hands[1], t)] as const,
+                knees: [mix(from.knees[0], to.knees[0], t), mix(from.knees[1], to.knees[1], t)] as const,
+                feet: [mix(from.feet[0], to.feet[0], t), mix(from.feet[1], to.feet[1], t)] as const,
+            };
+            const drawn = drawnClimberPoints(pose);
+            const knee = sign(drawn.buttocks, drawn.knees[0]!, drawn.feet[0]!);
+            const elbow = sign(drawn.neck, drawn.elbows[0]!, drawn.hands[0]!);
+            const physKnee = sign(pose.buttocks, pose.knees[0], pose.feet[0]);
+            const physElbow = sign(pose.neck, pose.elbows[0], pose.hands[0]);
+            if (step > 0 && physKnee !== 0 && physKnee === prevPhysKnee && knee !== 0 && prevKnee !== 0) {
+                expect(knee).toBe(prevKnee);
+            }
+            if (step > 0 && physElbow !== 0 && physElbow === prevPhysElbow && elbow !== 0 && prevElbow !== 0) {
+                expect(elbow).toBe(prevElbow);
+            }
+            prevKnee = knee;
+            prevElbow = elbow;
+            prevPhysKnee = physKnee;
+            prevPhysElbow = physElbow;
+        }
+    });
 });
+
+function flexion(a: { x: number; y: number }, joint: { x: number; y: number }, b: { x: number; y: number }): number {
+    const ux = a.x - joint.x;
+    const uy = a.y - joint.y;
+    const vx = b.x - joint.x;
+    const vy = b.y - joint.y;
+    const denom = Math.hypot(ux, uy) * Math.hypot(vx, vy) || 1;
+    const cos = Math.min(1, Math.max(-1, (ux * vx + uy * vy) / denom));
+    const interior = (Math.acos(cos) * 180) / Math.PI;
+    return 180 - interior;
+}
