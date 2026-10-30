@@ -1,5 +1,14 @@
 import type { Camera } from "./Camera.ts";
-import type { Skeleton } from "./Skeleton.ts";
+import {
+    ARM_REACH,
+    LEG_REACH,
+    PAINTED_LEG_REACH,
+    PAINTED_BACK,
+    PAINTED_HEAD,
+    PAINTED_HIP,
+    PAINTED_NECK,
+    type Skeleton,
+} from "./Skeleton.ts";
 
 /**
  * The climber is filled in logical pixels. The torso and head stay at the
@@ -56,19 +65,26 @@ const KNEE = 20;
 const STRAP = 21;
 
 /**
- * Torso and head stay at the mockup's lengths, and the physics joints use
- * the same distances (neck 11, hip 4, back 6, head 4). The arm may reach
- * 14.5 and the leg 14, which is the flexed length plus at most 15% stretch.
- * Arms and legs may stretch by at most 15%.
+ * Torso and legs stay at the painted lengths. The arm is scaled so a 25°
+ * bend and at most 15% stretch still reach the physics hand.
  */
-const NECK_LEN = 11;
-const BACK_LEN = 6;
-const HIP_LEN = 4;
-const HEAD_LEN = 4;
-const THIGH_LEN = 8;
-const SHIN_LEN = 8;
-const UPPER_ARM = 7;
-const FOREARM = 6;
+const NECK_LEN = PAINTED_NECK;
+const BACK_LEN = PAINTED_BACK;
+const HIP_LEN = PAINTED_HIP;
+const HEAD_LEN = PAINTED_HEAD;
+const LEG_DRAW_SCALE = LEG_REACH / PAINTED_LEG_REACH;
+const THIGH_LEN = 8 * LEG_DRAW_SCALE;
+const SHIN_LEN = 8 * LEG_DRAW_SCALE;
+const PAINTED_UPPER = 7;
+const PAINTED_FORE = 6;
+const PAINTED_ARM_FLEXED = Math.sqrt(
+    PAINTED_UPPER * PAINTED_UPPER +
+        PAINTED_FORE * PAINTED_FORE +
+        2 * PAINTED_UPPER * PAINTED_FORE * Math.cos((25 * Math.PI) / 180),
+);
+const ARM_DRAW_SCALE = ARM_REACH / (PAINTED_ARM_FLEXED * 1.15);
+const UPPER_ARM = PAINTED_UPPER * ARM_DRAW_SCALE;
+const FOREARM = PAINTED_FORE * ARM_DRAW_SCALE;
 
 /** Half-widths. The painted torso is about five pixels; the limbs two or three. */
 const ARM = 1.05;

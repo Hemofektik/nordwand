@@ -502,13 +502,13 @@ describe("climber silhouette", () => {
                 const upper = gap(drawn.neck, drawn.elbows[side]!);
                 const fore = gap(drawn.elbows[side]!, drawn.hands[side]!);
                 expect(thigh).toBeGreaterThan(6);
-                expect(thigh).toBeLessThanOrEqual(8 * 1.15 + 0.35);
+                expect(thigh).toBeLessThanOrEqual(8 * (18 / 14) * 1.15 + 0.35);
                 expect(shin).toBeGreaterThan(6);
-                expect(shin).toBeLessThanOrEqual(8 * 1.15 + 0.35);
+                expect(shin).toBeLessThanOrEqual(8 * (18 / 14) * 1.15 + 0.35);
                 expect(upper).toBeGreaterThan(5);
-                expect(upper).toBeLessThanOrEqual(7 * 1.15 + 0.35);
+                expect(upper).toBeLessThanOrEqual(11.2);
                 expect(fore).toBeGreaterThan(4);
-                expect(fore).toBeLessThanOrEqual(6 * 1.15 + 0.35);
+                expect(fore).toBeLessThanOrEqual(9.6);
                 expect(offLine(drawn.knees[side]!, drawn.buttocks, drawn.feet[side]!)).toBeGreaterThan(2.5);
                 expect(offLine(drawn.elbows[side]!, drawn.neck, drawn.hands[side]!)).toBeGreaterThan(1);
                 expect(flexion(drawn.buttocks, drawn.knees[side]!, drawn.feet[side]!)).toBeGreaterThan(70);
@@ -577,17 +577,17 @@ describe("climber silhouette", () => {
         const player = new Player(phys, wall, 150, 200, EGameState.Game | EGameState.Climbing);
         const skeleton = player.skeleton;
         expect(skeleton.bodylength).toBe(15);
-        expect(skeleton.armlength).toBe(14.5);
-        expect(skeleton.leglength).toBe(14);
+        expect(skeleton.armlength).toBe(20);
+        expect(skeleton.leglength).toBe(18);
         const distance = (index: number): number => phys.distanceConstraints[index]!.distance;
         expect(distance(skeleton.bodyConstraintIndices[0]!)).toBeCloseTo(4);
         expect(distance(skeleton.bodyConstraintIndices[1]!)).toBeCloseTo(6);
         expect(distance(skeleton.bodyConstraintIndices[2]!)).toBeCloseTo(5);
         expect(distance(skeleton.bodyConstraintIndices[3]!)).toBeCloseTo(4);
-        expect(distance(skeleton.leftArmConstraintIndices[0]!)).toBeCloseTo(7.25);
-        expect(distance(skeleton.leftArmConstraintIndices[1]!)).toBeCloseTo(7.25);
-        expect(distance(skeleton.leftLegConstraintIndices[0]!)).toBeCloseTo(7);
-        expect(distance(skeleton.leftLegConstraintIndices[1]!)).toBeCloseTo(7);
+        expect(distance(skeleton.leftArmConstraintIndices[0]!)).toBeCloseTo(10);
+        expect(distance(skeleton.leftArmConstraintIndices[1]!)).toBeCloseTo(10);
+        expect(distance(skeleton.leftLegConstraintIndices[0]!)).toBeCloseTo(9);
+        expect(distance(skeleton.leftLegConstraintIndices[1]!)).toBeCloseTo(9);
 
         const pose: ClimberPoints = {
             pelvis: { x: 0, y: 0 },
@@ -600,7 +600,7 @@ describe("climber silhouette", () => {
                 { x: 3, y: -8 },
             ],
             hands: [
-                { x: 14.5, y: -11 },
+                { x: 20, y: -11 },
                 { x: 6, y: -6 },
             ],
             knees: [
@@ -608,7 +608,7 @@ describe("climber silhouette", () => {
                 { x: -3, y: 10 },
             ],
             feet: [
-                { x: 0, y: 18 },
+                { x: 0, y: 22 },
                 { x: 6, y: 12 },
             ],
         };
@@ -674,6 +674,51 @@ describe("climber silhouette", () => {
         for (const gap of first.gaps) {
             expect(gap).toBeLessThanOrEqual(2.5);
         }
+    });
+
+    it("still takes about the original step, not a one-anchor flick", () => {
+        const phys = new SpringPhysics();
+        const wall = new Wall(150, 200, 12345);
+        phys.wall = wall;
+        const player = new Player(phys, wall, 150, 200, EGameState.Game | EGameState.Climbing);
+        const skeleton = player.skeleton;
+        const yOf = (): number => phys.particleStates[skeleton.pelvisParticleIndex]!.posY;
+        const highest = (indices: number[]): number => {
+            let hold = -1;
+            for (const index of indices) {
+                const grab = phys.fixedConstraints[index]!;
+                if (grab.isEnabled) {
+                    hold = Math.max(hold, grab.wallAnchorIndex);
+                }
+            }
+            return hold;
+        };
+        const startY = yOf();
+        let hand = highest(skeleton.handGrabConstraintIndex);
+        const steps: number[] = [];
+        let time = 0;
+        const step = 1 / 60;
+        for (let frame = 0; frame < 60 * 12; frame++) {
+            time += step;
+            wall.minPosYVisible = yOf() - 800;
+            wall.update(step);
+            phys.update(step);
+            player.update(time, step);
+            if (frame > 70 && frame % 45 === 0) {
+                player.tryClimb();
+            }
+            const next = highest(skeleton.handGrabConstraintIndex);
+            if (time > 1.2 && next > hand && hand >= 0) {
+                steps.push(next - hand);
+            }
+            hand = next;
+        }
+        const rise = (startY - yOf()) / 12;
+        const mean = steps.reduce((sum, value) => sum + value, 0) / steps.length;
+        expect(steps.length).toBeGreaterThan(8);
+        expect(mean).toBeGreaterThan(1.15);
+        expect(rise).toBeGreaterThan(5.5);
+        expect(rise).toBeLessThan(10);
     });
 });
 

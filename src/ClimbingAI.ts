@@ -23,7 +23,10 @@ export const ECLimbingState = Object.freeze(
 export type ECLimbingState = (typeof ECLimbingState)[keyof typeof ECLimbingState];
 
 const RaiseSpeed = 10.0;
-const ReachSpeed = 10.0;
+// The restored arm travels a slightly longer arc than the original 20px arm
+// on the taller body, so the same speed made the reach last ~0.24s instead
+// of ~0.17s. 14 brings that phase back in line.
+const ReachSpeed = 14.0;
 
 function flexLimb(
     skeleton: Skeleton,
@@ -122,9 +125,9 @@ function updateLimbAngles(deltaTime: number, skeleton: Skeleton, wall: Wall, rad
                 const deltaY = targetAnchor.posY - handParticle.posY;
                 const distanceSqr = deltaX * deltaX + deltaY * deltaY;
 
-                // Was 3 (~1.7px). The shorter arm settles about 2.8px from a
-                // hold it can already reach, so the grab never closed.
-                if (distanceSqr < 3.5 * 3.5) {
+                // Original latch: about 1.7px. The arm is long enough again to
+                // arrive on the hold, so the wider 3.5px grab is not needed.
+                if (distanceSqr < 3.0) {
                     fc.isEnabled = true;
                     fc.wallAnchorIndex = targetAnchor.index;
                     fc.posX = targetAnchor.posX;
@@ -429,9 +432,9 @@ export class ClimbingAI {
         this.climbingPosX = this.skeleton.phys.particleStates[this.skeleton.pelvisParticleIndex]!.posX;
         this.climbingPosY = this.skeleton.phys.particleStates[this.skeleton.pelvisParticleIndex]!.posY;
 
-        // Full bone length. The old 0.95 margin left the shorter arm unable to
-        // take the next hold (about 12.6px away, just past 0.95 * 13).
-        this.maximumArmReachDistanceSqr = Math.pow(this.skeleton.armlength, 2);
-        this.maximumLegReachDistanceSqr = Math.pow(this.skeleton.leglength, 2);
+        // Original margin. With the arm back at 20 this is a 19px reach, the
+        // distance one move used before the skeleton was shrunk.
+        this.maximumArmReachDistanceSqr = Math.pow(this.skeleton.armlength * 0.95, 2);
+        this.maximumLegReachDistanceSqr = Math.pow(this.skeleton.leglength * 0.95, 2);
     }
 }

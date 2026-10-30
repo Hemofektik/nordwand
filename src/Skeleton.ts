@@ -65,22 +65,31 @@ function createBodyParticle(phys: SpringPhysics, posX: number, posY: number, mas
     return particleIndex;
 }
 
+/**
+ * Painted torso and leg. The arm is the original 20px reach: that is what
+ * let one move take a hold two or three anchors up. The drawn arm uses the
+ * same reach, so the hand still lands on the grip. The leg stays at the
+ * crouched painted length, which is enough for the footholds.
+ */
+export const PAINTED_NECK = 11;
+export const PAINTED_HIP = 4;
+export const PAINTED_BACK = 6;
+export const PAINTED_HEAD = 4;
+export const PAINTED_LEG_REACH = 14;
+export const ARM_REACH = 20;
+/** Long enough that a push lifts the body about as far as the old 24px leg. */
+export const LEG_REACH = 18;
+
 export class Skeleton {
     public phys: SpringPhysics = undefined as unknown as SpringPhysics;
     public wall: Wall = undefined as unknown as Wall;
 
     public time = 0;
 
-    /**
-     * Painted proportions, in world pixels. Was body 24, arm 20, leg 24.
-     * The neck, hip, back, and head match the drawn torso. Arm reach 14.5 and
-     * leg reach 14 are the drawn limbs at their minimum bend (elbow 25°, knee
-     * 80°) after at most 15% stretch, so a fully extended grip still meets
-     * the glove and the boot.
-     */
-    public bodylength = 15;
-    public armlength = 14.5;
-    public leglength = 14;
+    /** Painted torso and leg. Arm reach is the original 20. */
+    public bodylength = PAINTED_NECK + PAINTED_HIP;
+    public armlength = ARM_REACH;
+    public leglength = LEG_REACH;
 
     public bodyConstraintIndices: number[] = [];
     public leftArmConstraintIndices: number[] = [];
@@ -182,12 +191,10 @@ export class Skeleton {
         // put skeleton at a position where the left wrist touches the selected anchor
         const armAnchorIndex = anchors[Math.round(anchors.length / 2)]!.index;
         const legAnchorIndex = armAnchorIndex - 8;
-        // Pelvis-to-neck is 11, hip 4, back 6, head 4: the same lengths the
-        // climber is drawn at. The neck starts level with the hand anchor.
-        const neckLen = 11;
-        const hipLen = 4;
-        const backLen = 6;
-        const headLen = 4;
+        const neckLen = PAINTED_NECK;
+        const hipLen = PAINTED_HIP;
+        const backLen = PAINTED_BACK;
+        const headLen = PAINTED_HEAD;
         posX = this.wall.wallAnchors[armAnchorIndex]!.posX - this.armlength * 2.0; // x2 to get enough extra distance
         posY = this.wall.wallAnchors[armAnchorIndex]!.posY + neckLen;
 
