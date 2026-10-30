@@ -505,10 +505,10 @@ describe("climber silhouette", () => {
                 expect(upper).toBeLessThanOrEqual(7 * 1.15 + 0.35);
                 expect(fore).toBeGreaterThan(4);
                 expect(fore).toBeLessThanOrEqual(6 * 1.15 + 0.35);
-                expect(offLine(drawn.knees[side]!, drawn.buttocks, drawn.feet[side]!)).toBeGreaterThan(1.5);
-                expect(offLine(drawn.elbows[side]!, drawn.neck, drawn.hands[side]!)).toBeGreaterThan(1.5);
-                expect(flexion(drawn.buttocks, drawn.knees[side]!, drawn.feet[side]!)).toBeGreaterThan(40);
-                expect(flexion(drawn.neck, drawn.elbows[side]!, drawn.hands[side]!)).toBeGreaterThan(40);
+                expect(offLine(drawn.knees[side]!, drawn.buttocks, drawn.feet[side]!)).toBeGreaterThan(2.5);
+                expect(offLine(drawn.elbows[side]!, drawn.neck, drawn.hands[side]!)).toBeGreaterThan(1);
+                expect(flexion(drawn.buttocks, drawn.knees[side]!, drawn.feet[side]!)).toBeGreaterThan(70);
+                expect(flexion(drawn.neck, drawn.elbows[side]!, drawn.hands[side]!)).toBeGreaterThan(20);
             }
         }
     });

@@ -5,8 +5,11 @@ import type { Skeleton } from "./Skeleton.ts";
  * The climber is filled in logical pixels. The torso and head stay at the
  * mockup's lengths. Arms and legs keep a thigh and shin (or upper arm and
  * forearm) of about 8 and 8, or 7 and 6, and may stretch by at most 15%.
- * The knee and elbow always bend. Hands and feet stop short of a physics
- * grip they cannot reach. No separate outline.
+ * Elbows stay about 25° from straight and hands tuck 2 pixels toward the
+ * chest. Knees stay about 80° from straight in a reach, and bend further
+ * when the foot is already near the hip; feet tuck 10 pixels toward the
+ * hips. Hands and feet stop short of a physics grip they cannot reach.
+ * No separate outline.
  */
 
 const PALETTE = [
@@ -325,10 +328,12 @@ function clampUnit(value: number): number {
 }
 
 const MAX_STRETCH = 1.15;
-/** Flexion away from a straight limb. Contact poses stay in this crouch. */
-const MIN_FLEXION_DEG = 50;
-/** Pull the drawn grip this far toward the chest or hip before bending. */
-const TUCK = 5;
+/** Degrees away from a straight limb. Arms stay mostly extended; knees crouch. */
+const ARM_MIN_FLEXION_DEG = 25;
+const LEG_MIN_FLEXION_DEG = 80;
+/** How far the drawn grip is pulled toward the chest or the hips before the bend. */
+const ARM_TUCK = 2;
+const LEG_TUCK = 10;
 
 function maxReachForFlex(upper: number, lower: number, flexionDeg: number): number {
     const cos = Math.cos((flexionDeg * Math.PI) / 180);
@@ -345,10 +350,8 @@ function pullToward(target: Point, body: Point, amount: number): Point {
 
 /**
  * Two-bone chain from `root` toward `target`. Lengths stay within 15% of the
- * mockup. The joint bends to the same side as `pole` (the physics knee or
- * elbow) and stays at least `MIN_FLEXION_DEG` from straight, so the limb
- * flexes toward the body instead of locking out. `body` is the fallback side
- * when the pole lies on the bone. If the grip is still farther, the end stops short.
+ * mockup. The joint bends to `side` and stays at least `flexionDeg` from
+ * straight. If the grip is still farther, the end stops short.
  */
 function bendSide(root: Point, joint: Point, end: Point, body: Point): number {
     const dx = end.x - root.x;
@@ -361,7 +364,7 @@ function bendSide(root: Point, joint: Point, end: Point, body: Point): number {
     return bodyCross >= 0 ? 1 : -1;
 }
 
-function solveTwoBone(root: Point, target: Point, side: number, lenA: number, lenB: number): { joint: Point; end: Point } {
+function solveTwoBone(root: Point, target: Point, side: number, lenA: number, lenB: number, flexionDeg: number): { joint: Point; end: Point } {
     const dx = target.x - root.x;
     const dy = target.y - root.y;
     const dist = Math.hypot(dx, dy);
@@ -378,7 +381,7 @@ function solveTwoBone(root: Point, target: Point, side: number, lenA: number, le
         upper *= scale;
         lower *= scale;
     }
-    const flexed = maxReachForFlex(upper, lower, MIN_FLEXION_DEG);
+    const flexed = maxReachForFlex(upper, lower, flexionDeg);
     const use = Math.min(dist, flexed);
     const ux = dx / dist;
     const uy = dy / dist;
@@ -419,31 +422,35 @@ export function drawnClimberPoints(points: ClimberPoints): ClimberPoints {
     const buttocks = along(points.pelvis, points.buttocks, pelvis, HIP_LEN);
     const leg0 = solveTwoBone(
         buttocks,
-        pullToward(points.feet[0], pelvis, TUCK),
+        pullToward(points.feet[0], pelvis, LEG_TUCK),
         bendSide(points.buttocks, points.knees[0], points.feet[0], pelvis),
         THIGH_LEN,
         SHIN_LEN,
+        LEG_MIN_FLEXION_DEG,
     );
     const leg1 = solveTwoBone(
         buttocks,
-        pullToward(points.feet[1], pelvis, TUCK),
+        pullToward(points.feet[1], pelvis, LEG_TUCK),
         bendSide(points.buttocks, points.knees[1], points.feet[1], pelvis),
         THIGH_LEN,
         SHIN_LEN,
+        LEG_MIN_FLEXION_DEG,
     );
     const arm0 = solveTwoBone(
         neck,
-        pullToward(points.hands[0], back, TUCK),
+        pullToward(points.hands[0], back, ARM_TUCK),
         bendSide(points.neck, points.elbows[0], points.hands[0], back),
         UPPER_ARM,
         FOREARM,
+        ARM_MIN_FLEXION_DEG,
     );
     const arm1 = solveTwoBone(
         neck,
-        pullToward(points.hands[1], back, TUCK),
+        pullToward(points.hands[1], back, ARM_TUCK),
         bendSide(points.neck, points.elbows[1], points.hands[1], back),
         UPPER_ARM,
         FOREARM,
+        ARM_MIN_FLEXION_DEG,
     );
     return {
         neck,
