@@ -2,54 +2,64 @@ import type { Camera } from "./Camera.ts";
 import type { Skeleton } from "./Skeleton.ts";
 
 /**
- * The climber is filled in logical pixels: a capsule per bone, a disc at
- * every joint, then a one-pixel outline. Nothing is rotated as a sprite,
- * so a sharp elbow cannot open a gap or drop a pixel.
+ * The climber is filled in logical pixels: a capsule per bone and a disc at
+ * every joint, the same width as that limb. Shading is a darker version of
+ * the cloth, skin, or helmet. There is no separate outline. Nothing is
+ * rotated as a sprite, so a sharp elbow cannot open a gap.
  */
-
-const OUTLINE = 1;
 
 const PALETTE = [
     "",
-    "#201f1a",
+    "",
     "#aba17d",
     "#8a8264",
     "#665f46",
     "#414722",
     "#22260d",
     "#e7a96c",
+    "#c48a52",
     "#1b1a15",
+    "#3a3228",
     "#6b4a32",
     "#4a3022",
     "#ac6900",
     "#995d00",
     "#daffff",
     "#21548f",
-    "#de7947",
 ];
 
 const SHIRT = 2;
 const SHIRT_SHADE = 3;
-const PANTS = 4;
-const PANTS_DARK = 5;
-const PANTS_DEEP = 6;
+const SHIRT_DEEP = 4;
+const PANTS = 5;
+const PANTS_DARK = 6;
 const SKIN = 7;
-const BOOT = 8;
-const PACK = 9;
-const PACK_DARK = 10;
-const HELMET = 11;
-const HELMET_DARK = 12;
-const LAMP = 13;
-const EYE = 14;
-const ACCENT = 15;
+const SKIN_SHADE = 8;
+const BOOT = 9;
+const BOOT_SHADE = 10;
+const PACK = 11;
+const PACK_DARK = 12;
+const HELMET = 13;
+const HELMET_DARK = 14;
+const LAMP = 15;
+const EYE = 16;
+
+/** Half-widths in logical pixels. A limb of radius ~1 is about two pixels wide. */
+const ARM = 1.2;
+const THIGH = 1.35;
+const SHIN = 1.2;
+const TORSO = 2.05;
+const NECK_R = 1.35;
+const PACK_R = 1.45;
+const HEAD_R = 2.25;
+const HAND_R = 1.2;
+const BOOT_R = 1.25;
 
 const HEAD: readonly string[] = [
-    "..hhhHH..",
-    ".hHHHLHh.",
-    ".hHssssh.",
-    ".dhseash.",
-    "..dssssd.",
-    "..cccccc.",
+    ".hHh.",
+    "hHLHh",
+    "hsseh",
+    ".hssh.",
 ];
 
 const HEAD_INK: Record<string, number> = {
@@ -58,9 +68,6 @@ const HEAD_INK: Record<string, number> = {
     L: LAMP,
     s: SKIN,
     e: EYE,
-    a: ACCENT,
-    c: SHIRT,
-    d: HELMET_DARK,
 };
 
 export interface Point {
@@ -174,41 +181,6 @@ function stamp(
     }
 }
 
-function addOutline(buf: Uint8Array, width: number, height: number): void {
-    const marks: number[] = [];
-    for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-            const i = y * width + x;
-            if (buf[i] !== 0) {
-                continue;
-            }
-            let touch = false;
-            for (let oy = -1; oy <= 1 && !touch; oy++) {
-                for (let ox = -1; ox <= 1; ox++) {
-                    if (ox === 0 && oy === 0) {
-                        continue;
-                    }
-                    const nx = x + ox;
-                    const ny = y + oy;
-                    if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
-                        continue;
-                    }
-                    if (buf[ny * width + nx] !== 0) {
-                        touch = true;
-                        break;
-                    }
-                }
-            }
-            if (touch) {
-                marks.push(i);
-            }
-        }
-    }
-    for (const i of marks) {
-        buf[i] = OUTLINE;
-    }
-}
-
 function closeHoles(buf: Uint8Array, width: number, height: number): void {
     const outside = new Uint8Array(buf.length);
     const queue: number[] = [];
@@ -265,10 +237,8 @@ function closeHoles(buf: Uint8Array, width: number, height: number): void {
                     continue;
                 }
                 const neighbor = buf[n] ?? 0;
-                if (neighbor >= 2) {
+                if (neighbor !== 0) {
                     color = neighbor;
-                } else if (neighbor === OUTLINE && color === 0) {
-                    color = OUTLINE;
                 }
             }
             if (color !== 0) {
@@ -300,46 +270,45 @@ function paint(buf: Uint8Array, width: number, height: number, points: ClimberPo
         ax = -ax;
         ay = -ay;
     }
-    const pack = { x: back.x + ax * 3.2, y: back.y + ay * 2.2 };
-    fillCapsule(buf, width, height, pack.x, pack.y - 3, pack.x, pack.y + 3, 2.6, PACK, PACK_DARK);
+    const pack = { x: back.x + ax * 2.4, y: back.y + ay * 1.2 };
+    fillCapsule(buf, width, height, pack.x, pack.y - 2.2, pack.x, pack.y + 2.2, PACK_R, PACK, PACK_DARK);
 
     for (let side = 0; side < 2; side++) {
         const knee = knees[side]!;
         const foot = feet[side]!;
         const pants = side === 0 ? PANTS_DARK : PANTS;
-        const deep = side === 0 ? PANTS_DEEP : PANTS_DARK;
-        fillCapsule(buf, width, height, buttocks.x, buttocks.y, knee.x, knee.y, 2.7, pants, deep);
-        fillCapsule(buf, width, height, knee.x, knee.y, foot.x, foot.y, 2.15, pants, deep);
-        fillDisc(buf, width, height, knee.x, knee.y, 2.9, pants);
+        const deep = side === 0 ? PANTS_DARK : PANTS;
+        fillCapsule(buf, width, height, buttocks.x, buttocks.y, knee.x, knee.y, THIGH, pants, deep);
+        fillCapsule(buf, width, height, knee.x, knee.y, foot.x, foot.y, SHIN, pants, deep);
+        fillDisc(buf, width, height, knee.x, knee.y, THIGH, pants);
         const sx = foot.x - knee.x;
         const sy = foot.y - knee.y;
         const sl = Math.hypot(sx, sy) || 1;
-        fillCapsule(buf, width, height, foot.x, foot.y, foot.x + (sx / sl) * 3.5, foot.y + (sy / sl) * 3.5, 2.3, BOOT, BOOT);
-        fillDisc(buf, width, height, foot.x, foot.y, 2.4, BOOT);
+        fillDisc(buf, width, height, foot.x, foot.y, BOOT_R, BOOT);
+        fillCapsule(buf, width, height, foot.x, foot.y, foot.x + (sx / sl) * 2.4, foot.y + (sy / sl) * 2.4, BOOT_R, BOOT, BOOT_SHADE);
     }
 
-    fillCapsule(buf, width, height, buttocks.x, buttocks.y, pelvis.x, pelvis.y, 3.3, PANTS, PANTS_DARK);
-    fillCapsule(buf, width, height, pelvis.x, pelvis.y, back.x, back.y, 3.8, SHIRT, SHIRT_SHADE);
-    fillCapsule(buf, width, height, back.x, back.y, neck.x, neck.y, 3.5, SHIRT, SHIRT_SHADE);
-    fillCapsule(buf, width, height, neck.x, neck.y, head.x, head.y, 3.2, SHIRT, SHIRT_SHADE);
-    fillDisc(buf, width, height, neck.x, neck.y, 3.6, SHIRT);
-    fillDisc(buf, width, height, pelvis.x, pelvis.y, 3.6, SHIRT);
-    fillDisc(buf, width, height, back.x, back.y, 3.7, SHIRT);
+    fillCapsule(buf, width, height, buttocks.x, buttocks.y, pelvis.x, pelvis.y, TORSO, PANTS, PANTS_DARK);
+    fillCapsule(buf, width, height, pelvis.x, pelvis.y, back.x, back.y, TORSO, SHIRT, SHIRT_DEEP);
+    fillCapsule(buf, width, height, back.x, back.y, neck.x, neck.y, TORSO, SHIRT, SHIRT_SHADE);
+    fillCapsule(buf, width, height, neck.x, neck.y, head.x, head.y, NECK_R, SHIRT, SHIRT_SHADE);
+    fillDisc(buf, width, height, neck.x, neck.y, TORSO, SHIRT);
+    fillDisc(buf, width, height, pelvis.x, pelvis.y, TORSO, SHIRT);
+    fillDisc(buf, width, height, back.x, back.y, TORSO, SHIRT);
+    fillDisc(buf, width, height, buttocks.x, buttocks.y, TORSO, PANTS);
 
     for (let side = 0; side < 2; side++) {
         const elbow = elbows[side]!;
         const hand = hands[side]!;
-        fillCapsule(buf, width, height, neck.x, neck.y, elbow.x, elbow.y, 1.9, SHIRT, SHIRT_SHADE);
-        fillCapsule(buf, width, height, elbow.x, elbow.y, hand.x, hand.y, 1.7, SHIRT, SHIRT_SHADE);
-        fillDisc(buf, width, height, elbow.x, elbow.y, 2.15, SHIRT);
-        fillDisc(buf, width, height, hand.x, hand.y, 2.05, SKIN);
-        fillCapsule(buf, width, height, hand.x, hand.y, hand.x + 2.4, hand.y, 1.45, SKIN, SKIN);
+        fillCapsule(buf, width, height, neck.x, neck.y, elbow.x, elbow.y, ARM, SHIRT, SHIRT_SHADE);
+        fillCapsule(buf, width, height, elbow.x, elbow.y, hand.x, hand.y, ARM, SHIRT, SHIRT_SHADE);
+        fillDisc(buf, width, height, elbow.x, elbow.y, ARM, SHIRT);
+        fillDisc(buf, width, height, hand.x, hand.y, HAND_R, SKIN);
+        fillCapsule(buf, width, height, hand.x, hand.y, hand.x + 1.6, hand.y, HAND_R, SKIN, SKIN_SHADE);
     }
 
-    const headAt = { x: (neck.x + head.x) * 0.5, y: (neck.y + head.y) * 0.5 };
-    fillDisc(buf, width, height, headAt.x, headAt.y - 1, 4.4, HELMET);
-    stamp(buf, width, height, HEAD, HEAD_INK, neck.x, neck.y, 4, 5);
-    addOutline(buf, width, height);
+    fillDisc(buf, width, height, head.x, head.y, HEAD_R, HELMET);
+    stamp(buf, width, height, HEAD, HEAD_INK, head.x, head.y, 2, 1);
     closeHoles(buf, width, height);
 }
 
@@ -387,10 +356,10 @@ export function rasterClimber(points: ClimberPoints): ClimberRaster {
     return { indices, width, height, originX, originY };
 }
 
-/** 4-connected body, and no empty pocket sealed inside the outline. */
+/** 4-connected body, and no empty pocket sealed inside the figure. */
 export function climberSilhouetteReport(raster: ClimberRaster): SilhouetteReport {
     const { indices, width, height } = raster;
-    const bodyAt = (i: number): boolean => (indices[i] ?? 0) >= 2;
+    const bodyAt = (i: number): boolean => (indices[i] ?? 0) !== 0;
     const solidAt = (i: number): boolean => (indices[i] ?? 0) !== 0;
     const seen = new Uint8Array(indices.length);
     let components = 0;
@@ -601,7 +570,7 @@ function blitRaster(ctx: CanvasRenderingContext2D, raster: ClimberRaster, dx: nu
             while (x + run < width && indices[y * width + x + run] === idx) {
                 run++;
             }
-            ctx.fillStyle = PALETTE[idx] ?? PALETTE[OUTLINE]!;
+            ctx.fillStyle = PALETTE[idx] ?? "#aba17d";
             ctx.fillRect(dx + x * scale, dy + y * scale, run * scale, scale);
             x += run;
         }

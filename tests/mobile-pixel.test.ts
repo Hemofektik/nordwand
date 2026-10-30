@@ -455,6 +455,7 @@ describe("climber silhouette", () => {
         for (const pose of STUDY_POSES) {
             const report = climberSilhouetteReport(rasterClimber(pose));
             expect(report.body).toBeGreaterThan(40);
+            expect(report.body).toBeLessThan(800);
             expect(report.components).toBe(1);
             expect(report.holes).toBe(0);
         }
