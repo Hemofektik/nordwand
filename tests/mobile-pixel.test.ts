@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { CLOUDS_PER_BAND, cloudInstance, cloudSpriteCount, cloudSpriteInfo } from "../src/cloudSprites.ts";
 import { EGameState } from "../src/Core.ts";
 import { SpringPhysics } from "../src/Physics.ts";
-import { climberSilhouetteReport, drawnClimberPoints, rasterClimber, STUDY_POSES } from "../src/pixelClimber.ts";
-import type { ClimberPoints } from "../src/pixelClimber.ts";
+import { climberSilhouetteReport, createPoseLatch, drawnClimberPoints, rasterClimber, STUDY_POSES } from "../src/pixelClimber.ts";
+import type { ClimberPoints, ClimberRaster } from "../src/pixelClimber.ts";
 import { Player } from "../src/Player.ts";
 import { ROCK_PATCHES, rockPatchPixels } from "../src/rockPatches.ts";
 import { applyRockShade, quantizeEdgeColumn, rockEdgeShade, rockIndexAt, rockPixelForCamera, rockWorldPixel, screenToWorld, worldEdgeColumn, worldPitons, worldToScreen } from "../src/rockTexture.ts";
@@ -720,7 +720,61 @@ describe("climber silhouette", () => {
         expect(rise).toBeGreaterThan(5.5);
         expect(rise).toBeLessThan(10);
     });
+
+    it("repeats the same pixels for the same pose", () => {
+        for (const pose of STUDY_POSES) {
+            const first = rasterClimber(pose);
+            const second = rasterClimber(pose);
+            expect(Array.from(second.indices)).toEqual(Array.from(first.indices));
+            expect(second.originX).toBe(first.originX);
+            expect(second.originY).toBe(first.originY);
+            const pixels = worldPixels(first).split("|");
+            expect(pixels.some((pixel) => pixel.endsWith(",16"))).toBe(true);
+            expect(pixels.some((pixel) => pixel.endsWith(",13"))).toBe(true);
+            expect(pixels.some((pixel) => pixel.endsWith(",15"))).toBe(true);
+        }
+    });
+
+    it("holds the sprite still when physics jitters inside a pixel", () => {
+        const pose = STUDY_POSES[0]!;
+        const latch = createPoseLatch();
+        const first = worldPixels(rasterClimber(pose, latch));
+        const nudged = nudgePose(pose, 0.12);
+        const second = worldPixels(rasterClimber(nudged, latch));
+        expect(second).toBe(first);
+        const again = worldPixels(rasterClimber(pose, latch));
+        expect(again).toBe(first);
+    });
 });
+
+function worldPixels(raster: ClimberRaster): string {
+    const marks: string[] = [];
+    for (let i = 0; i < raster.indices.length; i++) {
+        const color = raster.indices[i] ?? 0;
+        if (color === 0) {
+            continue;
+        }
+        const x = (i % raster.width) + raster.originX;
+        const y = Math.floor(i / raster.width) + raster.originY;
+        marks.push(`${x},${y},${color}`);
+    }
+    return marks.sort().join("|");
+}
+
+function nudgePose(pose: ClimberPoints, delta: number): ClimberPoints {
+    const shift = (point: { x: number; y: number }): { x: number; y: number } => ({ x: point.x + delta, y: point.y - delta * 0.4 });
+    return {
+        neck: shift(pose.neck),
+        back: shift(pose.back),
+        pelvis: shift(pose.pelvis),
+        buttocks: shift(pose.buttocks),
+        head: shift(pose.head),
+        elbows: [shift(pose.elbows[0]), shift(pose.elbows[1])],
+        hands: [shift(pose.hands[0]), shift(pose.hands[1])],
+        knees: [shift(pose.knees[0]), shift(pose.knees[1])],
+        feet: [shift(pose.feet[0]), shift(pose.feet[1])],
+    };
+}
 
 function flexion(a: { x: number; y: number }, joint: { x: number; y: number }, b: { x: number; y: number }): number {
     const ux = a.x - joint.x;

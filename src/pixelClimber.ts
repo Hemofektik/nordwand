@@ -11,13 +11,11 @@ import {
 } from "./Skeleton.ts";
 
 /**
- * The climber is filled in logical pixels. The torso and head stay at the
- * mockup's lengths. Arms and legs keep a thigh and shin (or upper arm and
- * forearm) of about 8 and 8, or 7 and 6, and may stretch by at most 15%.
- * Elbows stay at least 25° from straight. Knees stay at least 80° from
- * straight in a reach, and bend further when the foot is already near the
- * hip. The physics skeleton is the same size, so the hand and the foot land
- * on the grip. No separate outline.
+ * The climber is cached pixel-art parts. Each part is rotated once, at a
+ * fixed set of angles, and reused. Joints snap to whole pixels and angles
+ * move only when they leave their bin, so a tiny physics jitter does not
+ * change the picture. Elbows stay at least 25° from straight and knees at
+ * least 80°. Hands and feet still end on the physics grips. No outline.
  */
 
 const PALETTE = [
@@ -47,7 +45,6 @@ const PALETTE = [
 
 const SHIRT = 2;
 const SHIRT_SHADE = 3;
-const SHIRT_DEEP = 4;
 const PANTS = 5;
 const PANTS_DARK = 6;
 const SKIN = 7;
@@ -62,7 +59,6 @@ const EYE = 16;
 const CHEEK = 17;
 const GLOVE = 18;
 const KNEE = 20;
-const STRAP = 21;
 
 /**
  * Torso and legs stay at the painted lengths. The arm is scaled so a 25°
@@ -86,48 +82,66 @@ const ARM_DRAW_SCALE = ARM_REACH / (PAINTED_ARM_FLEXED * 1.15);
 const UPPER_ARM = PAINTED_UPPER * ARM_DRAW_SCALE;
 const FOREARM = PAINTED_FORE * ARM_DRAW_SCALE;
 
-/** Half-widths. The painted torso is about five pixels; the limbs two or three. */
-const ARM = 1.05;
-const THIGH = 1.55;
-const SHIN = 1.35;
-const TORSO = 2.35;
-const NECK_R = 1.35;
-const HEAD_R = 2.3;
-
-/** Traced from climber_ref.png, rope pixels that crossed the face removed. */
-const HEAD: readonly string[] = [
-    ".HHHH..",
-    ".HHHLH.",
-    "HHkkkkk",
-    "Hkkkkkk",
-    ".kkkekh",
-    ".kakkka",
-    ".kkkhhh",
+/** Traced from the reference. Face looks to +x, helmet top is the first row. */
+const HEAD_SPRITE: readonly string[] = [
+    "..HHHH.",
+    ".HHHDLD",
+    ".HHDDDk",
+    ".HDkkkkk",
+    ".Dkkkeka",
+    ".kakkkka",
+    ".kkkkhhh",
 ];
 
-const PACK_SPRITE: readonly string[] = [
-    "..RRRRR.",
-    ".RRRRRRR",
-    "RRRRRRRR",
-    "RRRRRRRR",
-    "RRRRRRR.",
-    "RRRRRR..",
-    "RRRRR...",
-    ".RRRR...",
+/** Shirt with the pack on the back (left when the face looks right). */
+const TORSO_SPRITE: readonly string[] = [
+    "..SSSs.",
+    "..SSSs.",
+    ".RSSSs.",
+    "RRSSSs.",
+    "RRRSSS.",
+    "RRRSSS.",
+    "RRRSSs.",
+    "RRRSSs.",
+    ".RRRSs.",
+    "..RRSs.",
+    "...SSs.",
 ];
 
-const GLOVE_SPRITE: readonly string[] = [
-    ".GG",
+const UPPER_ARM_SPRITE: readonly string[] = [
+    "ssssssss",
+    "SSSSSSSS",
+    "ssssssss",
+];
+
+const FOREARM_SPRITE: readonly string[] = [
+    "ssssGGGG",
+    "SSSSGGGG",
+    "ssssGGGG",
+];
+
+const THIGH_SPRITE: readonly string[] = [
+    "ppppppppK",
+    "PPPPPPPPK",
+    "ppppppppK",
+];
+
+const SHIN_SPRITE: readonly string[] = [
+    "ppppppDDD",
+    "PPPPPPDDD",
+    "ppppppBBB",
+];
+
+const GLOVE_TIP: readonly string[] = [
+    ".G.",
     "GGG",
     "GGG",
-    ".GG",
 ];
 
-const BOOT_SPRITE: readonly string[] = [
-    ".DD.DD",
-    "DDDDDD",
-    "DDDDDB",
-    "DDD....",
+const BOOT_TIP: readonly string[] = [
+    "DDD",
+    "DDD",
+    "BBB",
 ];
 
 export interface Point {
@@ -159,56 +173,6 @@ export interface SilhouetteReport {
     components: number;
     holes: number;
     body: number;
-}
-
-function fillCapsule(
-    buf: Uint8Array,
-    width: number,
-    height: number,
-    ax: number,
-    ay: number,
-    bx: number,
-    by: number,
-    radius: number,
-    fill: number,
-    shade: number,
-): void {
-    const minX = Math.max(0, Math.floor(Math.min(ax, bx) - radius - 1));
-    const maxX = Math.min(width - 1, Math.ceil(Math.max(ax, bx) + radius + 1));
-    const minY = Math.max(0, Math.floor(Math.min(ay, by) - radius - 1));
-    const maxY = Math.min(height - 1, Math.ceil(Math.max(ay, by) + radius + 1));
-    const dx = bx - ax;
-    const dy = by - ay;
-    const len2 = dx * dx + dy * dy;
-    const r2 = radius * radius;
-    for (let y = minY; y <= maxY; y++) {
-        for (let x = minX; x <= maxX; x++) {
-            const px = x + 0.5;
-            const py = y + 0.5;
-            let t = 0;
-            if (len2 > 1e-8) {
-                t = ((px - ax) * dx + (py - ay) * dy) / len2;
-                if (t < 0) {
-                    t = 0;
-                } else if (t > 1) {
-                    t = 1;
-                }
-            }
-            const qx = ax + t * dx;
-            const qy = ay + t * dy;
-            const ex = px - qx;
-            const ey = py - qy;
-            if (ex * ex + ey * ey > r2) {
-                continue;
-            }
-            const side = dx * ey - dy * ex;
-            buf[y * width + x] = side < 0 ? shade : fill;
-        }
-    }
-}
-
-function fillDisc(buf: Uint8Array, width: number, height: number, cx: number, cy: number, radius: number, fill: number): void {
-    fillCapsule(buf, width, height, cx, cy, cx, cy, radius, fill, fill);
 }
 
 function closeHoles(buf: Uint8Array, width: number, height: number): void {
@@ -287,41 +251,224 @@ const PART_INK: Record<string, number> = {
     e: EYE,
     a: CHEEK,
     R: PACK,
+    r: PACK_DARK,
     B: BOOT_SOLE,
-    S: STRAP,
+    S: SHIRT,
+    s: SHIRT_SHADE,
+    P: PANTS,
+    p: PANTS_DARK,
     G: GLOVE,
     D: BOOT,
+    K: KNEE,
 };
 
-/** Nearest-neighbour placement. Angle 0 points sprite +x along world +x. */
-function placeSprite(
-    buf: Uint8Array,
-    width: number,
-    height: number,
-    rows: readonly string[],
-    cx: number,
-    cy: number,
-    angle: number,
-    anchorCol: number,
-    anchorRow: number,
-): void {
+const INK_PRIORITY: Record<number, number> = {
+    [EYE]: 6,
+    [LAMP]: 5,
+    [CHEEK]: 4,
+    [GLOVE]: 3,
+    [KNEE]: 3,
+    [BOOT_SOLE]: 2,
+};
+
+/** Sixteen headings. A part is drawn from this table, never re-rotated per frame. */
+const ANGLE_STEPS = 16;
+const ANGLE_STEP = (Math.PI * 2) / ANGLE_STEPS;
+
+export interface PoseLatch {
+    angles: Record<string, number>;
+    pos: Record<string, number>;
+    facing: number;
+}
+
+export function createPoseLatch(): PoseLatch {
+    return { angles: {}, pos: {}, facing: 1 };
+}
+
+const liveLatch = createPoseLatch();
+
+interface Stamp {
+    cells: readonly (readonly [number, number, number])[];
+}
+
+const stampCache = new Map<string, Stamp>();
+
+function wrapAngle(delta: number): number {
+    let value = delta;
+    while (value > Math.PI) {
+        value -= Math.PI * 2;
+    }
+    while (value < -Math.PI) {
+        value += Math.PI * 2;
+    }
+    return value;
+}
+
+function latchScalar(latch: PoseLatch | undefined, id: string, value: number): number {
+    const rounded = Math.round(value);
+    if (latch === undefined) {
+        return rounded;
+    }
+    const prev = latch.pos[id];
+    if (prev === undefined) {
+        latch.pos[id] = rounded;
+        return rounded;
+    }
+    if (Math.abs(value - prev) >= 0.7) {
+        latch.pos[id] = rounded;
+        return rounded;
+    }
+    return prev;
+}
+
+function latchAngle(latch: PoseLatch | undefined, id: string, angle: number): number {
+    if (latch === undefined) {
+        return Math.round(angle / ANGLE_STEP) * ANGLE_STEP;
+    }
+    const prev = latch.angles[id];
+    if (prev === undefined) {
+        const quantized = Math.round(angle / ANGLE_STEP) * ANGLE_STEP;
+        latch.angles[id] = quantized;
+        return quantized;
+    }
+    const delta = wrapAngle(angle - prev);
+    if (Math.abs(delta) > ANGLE_STEP * 1.5) {
+        const quantized = Math.round(angle / ANGLE_STEP) * ANGLE_STEP;
+        latch.angles[id] = quantized;
+        return quantized;
+    }
+    const leave = ANGLE_STEP * 0.75;
+    if (delta > leave) {
+        latch.angles[id] = prev + ANGLE_STEP;
+    } else if (delta < -leave) {
+        latch.angles[id] = prev - ANGLE_STEP;
+    }
+    return latch.angles[id] ?? prev;
+}
+
+function latchFacing(latch: PoseLatch | undefined, cross: number): boolean {
+    if (latch === undefined) {
+        return cross < 0;
+    }
+    if (Math.abs(cross) >= 1.5) {
+        latch.facing = cross < 0 ? -1 : 1;
+    }
+    return latch.facing < 0;
+}
+
+function scaleRows(rows: readonly string[], targetLength: number): { rows: string[]; anchorCol: number } {
+    const sourceLength = rows[0]?.length ?? 1;
+    const length = Math.max(2, targetLength);
+    const scaled = rows.map((row) => {
+        let line = "";
+        for (let x = 0; x < length; x++) {
+            const source = Math.min(sourceLength - 1, Math.floor((x * sourceLength) / length));
+            line += row[source] ?? ".";
+        }
+        return line;
+    });
+    return { rows: scaled, anchorCol: 0 };
+}
+
+function bakeStamp(rows: readonly string[], anchorCol: number, anchorRow: number, angle: number, flip: boolean): Stamp {
+    const width = rows[0]?.length ?? 0;
     const cos = Math.cos(angle);
     const sin = Math.sin(angle);
+    const pending: { x: number; y: number; color: number; priority: number }[] = [];
     for (let row = 0; row < rows.length; row++) {
-        const line = rows[row]!;
+        const line = rows[row] ?? "";
         for (let col = 0; col < line.length; col++) {
-            const color = PART_INK[line[col]!];
+            const color = PART_INK[line[col] ?? "."];
             if (color === undefined) {
                 continue;
             }
-            const lx = col - anchorCol;
+            const usedCol = flip ? width - 1 - col : col;
+            const usedAnchor = flip ? width - 1 - anchorCol : anchorCol;
+            const lx = usedCol - usedAnchor;
             const ly = row - anchorRow;
-            const x = Math.round(cx + cos * lx - sin * ly);
-            const y = Math.round(cy + sin * lx + cos * ly);
-            if (x < 0 || y < 0 || x >= width || y >= height) {
-                continue;
-            }
-            buf[y * width + x] = color;
+            pending.push({
+                x: Math.round(cos * lx - sin * ly),
+                y: Math.round(sin * lx + cos * ly),
+                color,
+                priority: INK_PRIORITY[color] ?? 0,
+            });
+        }
+    }
+    pending.sort((a, b) => a.priority - b.priority);
+    const cells: [number, number, number][] = [];
+    const seen = new Map<string, number>();
+    for (const cell of pending) {
+        const key = `${cell.x},${cell.y}`;
+        const at = seen.get(key);
+        if (at === undefined) {
+            seen.set(key, cells.length);
+            cells.push([cell.x, cell.y, cell.color]);
+        } else {
+            cells[at] = [cell.x, cell.y, cell.color];
+        }
+    }
+    return { cells };
+}
+
+function cachedStamp(name: string, rows: readonly string[], anchorCol: number, anchorRow: number, angle: number, flip: boolean, targetLength?: number): Stamp {
+    const shaped = targetLength === undefined ? { rows: [...rows], anchorCol } : scaleRows(rows, targetLength);
+    const key = `${name}:${shaped.anchorCol}:${anchorRow}:${shaped.rows[0]?.length ?? 0}:${Math.round(angle * 1000)}:${flip ? 1 : 0}`;
+    const hit = stampCache.get(key);
+    if (hit !== undefined) {
+        return hit;
+    }
+    const stamp = bakeStamp(shaped.rows, shaped.anchorCol, anchorRow, angle, flip);
+    stampCache.set(key, stamp);
+    return stamp;
+}
+
+function plot(buf: Uint8Array, width: number, height: number, x: number, y: number, color: number): void {
+    if (x < 0 || y < 0 || x >= width || y >= height || color === 0) {
+        return;
+    }
+    buf[y * width + x] = color;
+}
+
+function blitStamp(
+    buf: Uint8Array,
+    width: number,
+    height: number,
+    stamp: Stamp,
+    worldX: number,
+    worldY: number,
+    originX: number,
+    originY: number,
+): void {
+    for (const cell of stamp.cells) {
+        plot(buf, width, height, worldX + cell[0] - originX, worldY + cell[1] - originY, cell[2]);
+    }
+}
+
+/** Integer connector under a part. The pixels depend only on the snapped endpoints. */
+function ribbon(
+    buf: Uint8Array,
+    width: number,
+    height: number,
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+    fill: number,
+): void {
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const steps = Math.max(Math.abs(dx), Math.abs(dy), 1);
+    for (let i = 0; i <= steps; i++) {
+        const x = Math.round(x0 + (dx * i) / steps);
+        const y = Math.round(y0 + (dy * i) / steps);
+        plot(buf, width, height, x, y, fill);
+    }
+}
+
+function block(buf: Uint8Array, width: number, height: number, x: number, y: number, color: number): void {
+    for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+            plot(buf, width, height, x + dx, y + dy, color);
         }
     }
 }
@@ -490,84 +637,126 @@ export function drawnClimberPoints(points: ClimberPoints): ClimberPoints {
     };
 }
 
-function paint(buf: Uint8Array, width: number, height: number, points: ClimberPoints, originX: number, originY: number): void {
+function localPoint(latch: PoseLatch | undefined, id: string, point: Point): Point {
+    return { x: latchScalar(latch, `${id}x`, point.x), y: latchScalar(latch, `${id}y`, point.y) };
+}
+
+function paint(buf: Uint8Array, width: number, height: number, points: ClimberPoints, originX: number, originY: number, latch?: PoseLatch): void {
     const posed = drawnClimberPoints(points);
-    const p = (pt: Point): Point => ({ x: pt.x - originX, y: pt.y - originY });
-    const neck = p(posed.neck);
-    const back = p(posed.back);
-    const pelvis = p(posed.pelvis);
-    const buttocks = p(posed.buttocks);
-    const head = p(posed.head);
-    const elbows = [p(posed.elbows[0]), p(posed.elbows[1])] as const;
-    const hands = [p(posed.hands[0]), p(posed.hands[1])] as const;
-    const knees = [p(posed.knees[0]), p(posed.knees[1])] as const;
-    const feet = [p(posed.feet[0]), p(posed.feet[1])] as const;
+    const neck = localPoint(latch, "neck", posed.neck);
+    const pelvis = localPoint(latch, "pelvis", posed.pelvis);
+    const buttocks = localPoint(latch, "hip", posed.buttocks);
+    const head = localPoint(latch, "head", posed.head);
+    const elbows = [localPoint(latch, "e0", posed.elbows[0]), localPoint(latch, "e1", posed.elbows[1])] as const;
+    const hands = [localPoint(latch, "h0", posed.hands[0]), localPoint(latch, "h1", posed.hands[1])] as const;
+    const knees = [localPoint(latch, "k0", posed.knees[0]), localPoint(latch, "k1", posed.knees[1])] as const;
+    const feet = [localPoint(latch, "f0", posed.feet[0]), localPoint(latch, "f1", posed.feet[1])] as const;
 
     const tdx = neck.x - pelvis.x;
     const tdy = neck.y - pelvis.y;
-    const tlen = Math.hypot(tdx, tdy) || 1;
-    const ux = tdx / tlen;
-    const uy = tdy / tlen;
-    let px = -uy;
-    let py = ux;
-    const hx = (hands[0].x + hands[1].x) / 2 - back.x;
-    const hy = (hands[0].y + hands[1].y) / 2 - back.y;
-    if (px * hx + py * hy > 0) {
-        px = -px;
-        py = -py;
-    }
-    const pack = { x: back.x + px * 4.5, y: back.y + py * 4.5 };
-    fillCapsule(buf, width, height, pack.x - ux * 3, pack.y - uy * 3, pack.x + ux * 2.4, pack.y + uy * 2.4, 2.1, PACK, PACK_DARK);
-    fillCapsule(buf, width, height, pack.x + ux * 2.2, pack.y + uy * 2.2, neck.x + px * 1.4, neck.y + py * 1.4, 0.75, PACK, PACK);
-    const packUp = Math.atan2(-ux, uy);
-    placeSprite(buf, width, height, PACK_SPRITE, pack.x, pack.y, packUp, 4, 3);
+    const handCross = tdx * ((hands[0].y + hands[1].y) / 2 - pelvis.y) - tdy * ((hands[0].x + hands[1].x) / 2 - pelvis.x);
+    const flip = latchFacing(latch, handCross);
+    const into = (world: Point): Point => ({ x: world.x - originX, y: world.y - originY });
 
-    for (let side = 0; side < 2; side++) {
-        const knee = knees[side]!;
-        const foot = feet[side]!;
-        const pants = side === 0 ? PANTS_DARK : PANTS;
-        const deep = side === 0 ? PANTS_DARK : PANTS;
-        fillCapsule(buf, width, height, buttocks.x, buttocks.y, knee.x, knee.y, THIGH, pants, deep);
-        fillCapsule(buf, width, height, knee.x, knee.y, foot.x, foot.y, SHIN, pants, deep);
-        fillDisc(buf, width, height, knee.x, knee.y, THIGH + 0.35, KNEE);
-        const sx = foot.x - knee.x;
-        const sy = foot.y - knee.y;
-        const sl = Math.hypot(sx, sy) || 1;
-        const ux = sx / sl;
-        const uy = sy / sl;
-        fillDisc(buf, width, height, foot.x, foot.y, 1.3, BOOT);
-        placeSprite(buf, width, height, BOOT_SPRITE, foot.x, foot.y, Math.atan2(uy, ux), 1, 1);
-    }
+    const torsoAngle = Math.atan2(tdx, -tdy);
+    const headAngle = latchAngle(latch, "head", Math.atan2(head.x - neck.x, -(head.y - neck.y)));
 
-    fillCapsule(buf, width, height, buttocks.x, buttocks.y, pelvis.x, pelvis.y, TORSO, PANTS, PANTS_DARK);
-    fillCapsule(buf, width, height, pelvis.x, pelvis.y, back.x, back.y, TORSO, SHIRT, SHIRT_DEEP);
-    fillCapsule(buf, width, height, back.x, back.y, neck.x, neck.y, TORSO, SHIRT, SHIRT_SHADE);
-    fillCapsule(buf, width, height, neck.x, neck.y, head.x, head.y, NECK_R, SHIRT, SHIRT_SHADE);
-    fillDisc(buf, width, height, neck.x, neck.y, TORSO, SHIRT);
-    fillDisc(buf, width, height, pelvis.x, pelvis.y, TORSO, SHIRT);
-    fillDisc(buf, width, height, back.x, back.y, TORSO, SHIRT);
-    fillDisc(buf, width, height, buttocks.x, buttocks.y, TORSO, PANTS);
+    ribbon(buf, width, height, ...pair(into(buttocks), into(pelvis)), PANTS);
+    ribbon(buf, width, height, ...pair(into(pelvis), into(neck)), SHIRT);
+    ribbon(buf, width, height, ...pair(into(neck), into(head)), SHIRT);
 
-    for (let side = 0; side < 2; side++) {
+    const order = [0, 1].sort((a, b) => limbCross(tdx, tdy, neck, elbows[a]!) - limbCross(tdx, tdy, neck, elbows[b]!));
+    for (const side of order) {
         const elbow = elbows[side]!;
         const hand = hands[side]!;
-        fillCapsule(buf, width, height, neck.x, neck.y, elbow.x, elbow.y, ARM, SHIRT, SHIRT_SHADE);
-        fillCapsule(buf, width, height, elbow.x, elbow.y, hand.x, hand.y, ARM, SHIRT, SHIRT_SHADE);
-        fillDisc(buf, width, height, elbow.x, elbow.y, ARM + 0.45, SHIRT_DEEP);
-        const hx = hand.x - elbow.x;
-        const hy = hand.y - elbow.y;
-        fillDisc(buf, width, height, hand.x, hand.y, 1.2, GLOVE);
-        placeSprite(buf, width, height, GLOVE_SPRITE, hand.x, hand.y, Math.atan2(hy, hx), 2, 1);
+        const knee = knees[side]!;
+        const foot = feet[side]!;
+        const armLen = Math.max(2, Math.round(Math.hypot(elbow.x - neck.x, elbow.y - neck.y)));
+        const foreLen = Math.max(2, Math.round(Math.hypot(hand.x - elbow.x, hand.y - elbow.y)));
+        const thighLen = Math.max(2, Math.round(Math.hypot(knee.x - buttocks.x, knee.y - buttocks.y)));
+        const shinLen = Math.max(2, Math.round(Math.hypot(foot.x - knee.x, foot.y - knee.y)));
+        // The shaft follows the snapped endpoints exactly, so the sprite
+        // lies on the bone instead of stepping to a coarser heading.
+        const thighAngle = Math.atan2(knee.y - buttocks.y, knee.x - buttocks.x);
+        const shinAngle = Math.atan2(foot.y - knee.y, foot.x - knee.x);
+        const upperAngle = Math.atan2(elbow.y - neck.y, elbow.x - neck.x);
+        const foreAngle = Math.atan2(hand.y - elbow.y, hand.x - elbow.x);
+        ribbon(buf, width, height, ...pair(into(buttocks), into(knee)), PANTS);
+        ribbon(buf, width, height, ...pair(into(knee), into(foot)), PANTS);
+        ribbon(buf, width, height, ...pair(into(neck), into(elbow)), SHIRT);
+        ribbon(buf, width, height, ...pair(into(elbow), into(hand)), SHIRT);
+        blitStamp(buf, width, height, cachedStamp("thigh", THIGH_SPRITE, 0, 1, thighAngle, false, thighLen), buttocks.x, buttocks.y, originX, originY);
+        blitStamp(buf, width, height, cachedStamp("shin", SHIN_SPRITE, 0, 1, shinAngle, false, shinLen), knee.x, knee.y, originX, originY);
+        blitStamp(buf, width, height, cachedStamp("upper", UPPER_ARM_SPRITE, 0, 1, upperAngle, false, armLen), neck.x, neck.y, originX, originY);
+        blitStamp(buf, width, height, cachedStamp("fore", FOREARM_SPRITE, 0, 1, foreAngle, false, foreLen), elbow.x, elbow.y, originX, originY);
+        blitStamp(buf, width, height, cachedStamp("glove", GLOVE_TIP, 1, 1, foreAngle, false), hand.x, hand.y, originX, originY);
+        blitStamp(buf, width, height, cachedStamp("boot", BOOT_TIP, 1, 1, shinAngle, false), foot.x, foot.y, originX, originY);
+        block(buf, width, height, elbow.x - originX, elbow.y - originY, SHIRT_SHADE);
+        block(buf, width, height, knee.x - originX, knee.y - originY, KNEE);
     }
 
-    fillDisc(buf, width, height, head.x, head.y, HEAD_R, HELMET);
-    const headDx = head.x - neck.x;
-    const headDy = head.y - neck.y;
-    placeSprite(buf, width, height, HEAD, head.x, head.y, Math.atan2(headDx, -headDy), 3, 2);
+    block(buf, width, height, neck.x - originX, neck.y - originY, SHIRT);
+    block(buf, width, height, pelvis.x - originX, pelvis.y - originY, SHIRT);
+    block(buf, width, height, buttocks.x - originX, buttocks.y - originY, PANTS);
+    blitStamp(
+        buf,
+        width,
+        height,
+        cachedStamp("torso", TORSO_SPRITE, 3, 10, torsoAngle, flip),
+        pelvis.x,
+        pelvis.y,
+        originX,
+        originY,
+    );
+    blitStamp(
+        buf,
+        width,
+        height,
+        cachedStamp("head", HEAD_SPRITE, 3, 5, headAngle, flip),
+        neck.x,
+        neck.y,
+        originX,
+        originY,
+    );
+    bridgeDiagonals(buf, width, height);
+    bridgeDiagonals(buf, width, height);
     closeHoles(buf, width, height);
 }
 
-export function rasterClimber(points: ClimberPoints): ClimberRaster {
+/** Join pixels that touch only at a corner, so a rotated part stays one piece. */
+function bridgeDiagonals(buf: Uint8Array, width: number, height: number): void {
+    const extra: { at: number; color: number }[] = [];
+    for (let y = 0; y < height - 1; y++) {
+        for (let x = 0; x < width - 1; x++) {
+            const i = y * width + x;
+            const here = buf[i] ?? 0;
+            const right = buf[i + 1] ?? 0;
+            const down = buf[i + width] ?? 0;
+            const downRight = buf[i + width + 1] ?? 0;
+            if (here !== 0 && downRight !== 0 && right === 0 && down === 0) {
+                extra.push({ at: i + 1, color: here });
+            }
+            if (right !== 0 && down !== 0 && here === 0 && downRight === 0) {
+                extra.push({ at: i, color: right });
+            }
+        }
+    }
+    for (const cell of extra) {
+        if ((buf[cell.at] ?? 0) === 0) {
+            buf[cell.at] = cell.color;
+        }
+    }
+}
+
+function pair(a: Point, b: Point): [number, number, number, number] {
+    return [a.x, a.y, b.x, b.y];
+}
+
+function limbCross(tdx: number, tdy: number, root: Point, joint: Point): number {
+    return tdx * (joint.y - root.y) - tdy * (joint.x - root.x);
+}
+
+export function rasterClimber(points: ClimberPoints, latch?: PoseLatch): ClimberRaster {
     const drawn = drawnClimberPoints(points);
     const all = [
         points.neck,
@@ -619,7 +808,7 @@ export function rasterClimber(points: ClimberPoints): ClimberRaster {
     const width = Math.ceil(maxX + pad) - originX + 1;
     const height = Math.ceil(maxY + pad) - originY + 1;
     const indices = new Uint8Array(width * height);
-    paint(indices, width, height, points, originX, originY);
+    paint(indices, width, height, points, originX, originY, latch);
     return { indices, width, height, originX, originY };
 }
 
@@ -908,7 +1097,7 @@ export function drawPixelClimber(ctx: CanvasRenderingContext2D, cam: Camera, ske
             lp(at(skeleton, skeleton.footParticleIndex[1]!).x, at(skeleton, skeleton.footParticleIndex[1]!).y),
         ],
     };
-    const raster = rasterClimber(points);
+    const raster = rasterClimber(points, liveLatch);
     const s = Math.max(1, cam.pixelScale);
     ctx.imageSmoothingEnabled = false;
     blitRaster(ctx, raster, raster.originX * s, raster.originY * s, s);
