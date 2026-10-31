@@ -3,7 +3,13 @@ import { EGameState } from "./Core.ts";
 import { MusicPlayer } from "./MusicPlayer.ts";
 import { SpringPhysics } from "./Physics.ts";
 import { PixelSprite } from "./PixelSprite.ts";
+import { PixelPresenter } from "./pixelPresenter.ts";
+import { drawClimberStudy } from "./pixelClimber.ts";
+import { drawBirds, drawClouds, drawMountains, drawSky, loadPixelScene } from "./pixelScene.ts";
+import { clientToLogical } from "./pixelViewport.ts";
 import { Player } from "./Player.ts";
+import { bowDeltaFromLean, combinedLean, leanFromPointer } from "./touchInput.ts";
+import { freePinchPair, pinchDistance, wheelZoomDirection, zoomFromPinch, zoomFromWheel, type PinchPointer } from "./zoom.ts";
 import { Wall } from "./Wall.ts";
 import { requiredElement, setTextOfElement } from "./dom.ts";
 
@@ -50,15 +56,29 @@ export class Game {
     public debugInfo: HTMLElement | null = null;
     public altimeter_data: HTMLElement | null = null;
     public music: MusicPlayer;
+    public readonly screen: HTMLCanvasElement;
+    public readonly presenter: PixelPresenter;
+    /** -1 out into the air, +1 in toward the rock. Set by the lean pad. */
+    public touchLean = 0;
+    private leanVisual = 0;
+    private leanPointerId: number | null = null;
+    private lastTouchClimbAt = 0;
+    private lastWheelAt = 0;
+    private climbTimer: ReturnType<typeof setTimeout> | null = null;
+    private climbPoint: { x: number; y: number } | null = null;
+    private pinch: { startDistance: number; startScale: number } | null = null;
+    private viewportKey = "";
+    private readonly poseStudy: boolean;
 
-    public constructor(canvas: HTMLCanvasElement) {
-        this.canvas = canvas;
-        const ctx = this.canvas.getContext("2d");
-        if (ctx === null) {
-            throw new Error("Canvas 2D context is not available");
-        }
-        this.ctx = ctx;
-        this.cam = new Camera(canvas);
+    public constructor(screen: HTMLCanvasElement) {
+        this.screen = screen;
+        this.presenter = new PixelPresenter(screen);
+        this.applyViewport();
+        this.canvas = this.presenter.logical;
+        this.ctx = this.presenter.logicalCtx;
+        this.cam = new Camera(this.canvas);
+        this.poseStudy = new URLSearchParams(window.location.search).get("poses") === "1";
+        loadPixelScene();
         this.music = new MusicPlayer(
             [ // Music tracks (filename, song name, artist)
                 ["duncan beattie - sevenhundredbeats.mp3", "sevenhundredbeats", "duncan beattie"],
@@ -78,27 +98,53 @@ export class Game {
     }
 
     public init(): void {
-        const style = this.canvas.style as CSSStyleDeclaration & { msTouchAction?: string };
+        const style = this.screen.style as CSSStyleDeclaration & { msTouchAction?: string };
+        style.touchAction = "none";
         if (typeof style.msTouchAction !== "undefined") {
             style.msTouchAction = "none"; // prevent canvas from being moved by touch gestures
         }
 
-        // Event registration
-        this.canvas.addEventListener("mousemove", (ev) => this.mouse_move(ev), false);
-        this.canvas.addEventListener("mousedown", (ev) => this.mouse_down(ev), false);
-        this.canvas.addEventListener("mouseup", (ev) => this.mouse_up(ev), false);
-        this.canvas.addEventListener("touchstart", (ev) => this.touch_start(ev), false);
+        // Event registration. Pointers land on the on-screen canvas; drawing uses the logical one.
+        this.screen.addEventListener("mousemove", (ev) => this.mouse_move(ev), false);
+        this.screen.addEventListener("mousedown", (ev) => this.mouse_down(ev), false);
+        this.screen.addEventListener("mouseup", (ev) => this.mouse_up(ev), false);
+        this.screen.addEventListener("touchstart", (ev) => this.touch_start(ev), { passive: false });
         {
-            document.addEventListener("DOMMouseScroll", (ev) => this.mouse_scroll(ev), false);
-            document.addEventListener("mousewheel", (ev) => this.mouse_scroll(ev), false);
+            document.addEventListener("wheel", (ev) => this.mouse_scroll(ev), { passive: false });
+            document.addEventListener("DOMMouseScroll", (ev) => this.mouse_scroll(ev), { passive: false });
+            document.addEventListener("mousewheel", (ev) => this.mouse_scroll(ev), { passive: false });
             window.addEventListener("keydown", (ev) => this.key_down(ev), false);
             window.addEventListener("keyup", (ev) => this.key_up(ev), false);
             window.addEventListener("blur", () => this.pause(true), false);
+            window.addEventListener("touchmove", (ev) => this.touch_move(ev), { passive: false });
+            window.addEventListener("touchend", (ev) => this.touch_end(ev), { passive: false });
+            window.addEventListener("touchcancel", (ev) => this.touch_end(ev), { passive: false });
+            window.addEventListener("gesturestart", (ev) => ev.preventDefault());
+            window.addEventListener("touchstart", () => document.documentElement.classList.add("touch-input"), { passive: true });
 
             requiredElement("mute").addEventListener("click", () => this.music.mute(), false);
             requiredElement("pause").addEventListener("click", () => this.pause(), false);
             requiredElement("help").addEventListener("click", () => this.toggle_help(), false);
             requiredElement("pausedmessage").addEventListener("click", () => this.pause(), false);
+            requiredElement("newlevel").addEventListener("click", () => this.loadRandomLevel(), false);
+            requiredElement("deathmessage").addEventListener("click", () => this.loadRandomLevel(), false);
+            requiredElement("successmessage").addEventListener("click", () => this.loadRandomLevel(), false);
+            requiredElement("warningmessage").addEventListener("click", () => this.loadRandomLevel(), false);
+            requiredElement("helpclose").addEventListener("click", () => this.toggle_help(), false);
+
+            this.bindLeanPad(requiredElement("lean"));
+            requiredElement("climb").addEventListener("pointerdown", (ev) => {
+                ev.preventDefault();
+                if (!this.paused) {
+                    this.player?.tryClimb();
+                }
+            });
+            requiredElement("letgo").addEventListener("pointerdown", (ev) => {
+                ev.preventDefault();
+                if (!this.paused) {
+                    this.letGo();
+                }
+            });
 
             this.debugInfo = document.getElementById("debuginfo");
             this.altimeter_data = document.getElementById("altimeter_data");
@@ -109,15 +155,25 @@ export class Game {
         this.music.init();
     }
 
+    public loadRandomLevel(): void {
+        this.loadLevel(this.gameState, Math.floor(Math.random() * 0x80000000));
+    }
+
     public toggle_help(): void {
         const overlay = document.getElementById("helpoverlay");
+        if (overlay === null) {
+            return;
+        }
 
-        // If overlay is hidden
-        if (overlay !== null && overlay.style.display === "none") {
-            this.pause(true); // Pause the game
-            overlay.style.display = "block"; // Show overlay
-        } else if (overlay !== null) {
-            overlay.style.display = "none"; // Hide overlay
+        const hidden = !overlay.classList.contains("open");
+        if (hidden) {
+            this.pause(true);
+            overlay.classList.add("open");
+        } else {
+            overlay.classList.remove("open");
+            if (this.paused) {
+                this.pause();
+            }
         }
 
         // If we're just now starting the game
@@ -196,13 +252,40 @@ export class Game {
     }
 
     public touch_start(ev: TouchEvent): void {
-        ev.preventDefault(); // Prevent dragging
-        const touch = ev.touches[0]; // Just pay attention to first touch
-        if (touch === undefined) {
+        ev.preventDefault(); // Prevent dragging, pull-to-refresh, browser pinch-zoom, and a second climb
+        this.updatePinch(ev.touches);
+        if (this.pinch !== null) {
+            this.cancelClimb();
             return;
         }
+        const started = ev.changedTouches[0];
+        if (started === undefined || this.touchOnControl(started.clientX, started.clientY)) {
+            return;
+        }
+        if (this.pictureTouches(ev.touches).length >= 2) {
+            return;
+        }
+        this.armClimb(started.clientX, started.clientY);
+    }
 
-        this.click_at_point(touch.pageX, touch.pageY);
+    public touch_move(ev: TouchEvent): void {
+        ev.preventDefault();
+        this.updatePinch(ev.touches);
+        if (this.pinch !== null) {
+            this.cancelClimb();
+        }
+    }
+
+    public touch_end(ev: TouchEvent): void {
+        const wasPinch = this.pinch !== null;
+        this.updatePinch(ev.touches);
+        if (wasPinch) {
+            this.cancelClimb();
+            return;
+        }
+        if (ev.touches.length === 0) {
+            this.flushClimb();
+        }
     }
 
     public mouse_move(ev: MouseEvent): void {
@@ -217,6 +300,9 @@ export class Game {
 
     public mouse_down(ev: MouseEvent): void {
         ev.preventDefault();
+        if (performance.now() - this.lastTouchClimbAt < 700) {
+            return;
+        }
         const point = this.readMousePoint(ev);
         if (ev.button === MOUSE_BUTTON_LEFT) {
             this.click_at_point(point.x, point.y);
@@ -234,30 +320,15 @@ export class Game {
     }
 
     public mouse_scroll(event: Event): void {
-        let delta = 0;
-
+        event.preventDefault();
+        const now = performance.now();
+        if (now - this.lastWheelAt < 8) {
+            return;
+        }
+        this.lastWheelAt = now;
         const wheelEvent = event as WheelEvent & { wheelDelta?: number; detail?: number };
-
-        // normalize the delta
-        if (wheelEvent.wheelDelta) {
-            // IE and Opera
-            delta = wheelEvent.wheelDelta / 60;
-        } else if (wheelEvent.detail) {
-            // W3C
-            delta = -wheelEvent.detail / 2;
-        } else if (wheelEvent.deltaY) {
-            delta = -wheelEvent.deltaY;
-        }
-        delta = delta / Math.abs(delta);
-
-        if (delta !== 0) {
-            if (delta > 0) {
-                this.cam.scale_target *= 1.2;
-            }
-            if (delta < 0) {
-                this.cam.scale_target /= 1.2;
-            }
-        }
+        const direction = wheelZoomDirection(wheelEvent.wheelDelta, wheelEvent.detail, wheelEvent.deltaY);
+        this.cam.scale_target = zoomFromWheel(this.cam.scale_target, direction);
     }
 
     public key_up(e: KeyboardEvent): void {
@@ -280,7 +351,7 @@ export class Game {
                 this.pause();
                 break;
             case 82: // R
-                this.loadLevel(this.gameState, Math.floor(Math.random() * 0x80000000));
+                this.loadRandomLevel();
                 break;
             case 68: // D
                 this.debug = !this.debug;
@@ -361,25 +432,29 @@ export class Game {
         this.frame_delta_smoothed = this.frame_delta_smoothed * 0.7 + frameDelta * 0.3;
         this.frame_delta = this.frame_delta_smoothed; // smooth real delta to have smoother movements
 
-        // Canvas maintenance
-        if (this.canvas.width !== window.innerWidth || this.canvas.height !== window.innerHeight) {
-            this.canvas.width = window.innerWidth;
-            this.canvas.height = window.innerHeight;
+        this.applyViewport();
+        this.presenter.prepare();
 
-            // TODO: react on resolution change (adapt pixel zoom, letterboxes, HUD, etc.)
+        if (this.poseStudy) {
+            drawClimberStudy(this.ctx);
+            const hud = document.getElementById("touch-hud");
+            if (hud !== null) {
+                hud.style.display = "none";
+            }
+            this.presenter.present();
+            return;
         }
 
-        this.ctx.fillStyle = this.bg_color;
-        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-        this.ctx.beginPath();
-        this.ctx.rect(0, 0, this.canvas.width, this.canvas.height);
-        this.ctx.closePath();
-        this.ctx.fill();
+        drawSky(this.ctx);
 
         this.handleInput(this.frame_delta_smoothed);
 
         if (this.player !== undefined) {
-            this.cam.update(this.player.posX, this.player.posY, this.frame_delta!);
+            // Look toward the rock so the climber sits in the open sky. The
+            // body itself is not moved.
+            const logicalWidth = this.cam.canvas.width / Math.max(1, this.cam.pixelScale);
+            const wallBias = Math.min(56, Math.max(20, logicalWidth * 0.22));
+            this.cam.update(this.player.posX + wallBias, this.player.posY, this.frame_delta!);
         }
 
         if (!this.paused) { // update world
@@ -402,25 +477,33 @@ export class Game {
             this.player?.update(this.gameTime, this.frame_delta!);
         }
 
-        // rendering
+        // rendering. Snap after the ease so a fractional camera cannot shift the world grid.
         {
-            // render World
-            this.wall?.draw(this.ctx, this.cam);
-
-            //this.bg_temp.draw(this.ctx, this.cam, 0, 0);
-            this.player?.draw(this.ctx, this.cam);
+            const easedX = this.cam.posX;
+            const easedY = this.cam.posY;
+            this.cam.posX = this.cam.drawX();
+            this.cam.posY = this.cam.drawY();
+            drawMountains(this.ctx, this.cam);
+            drawClouds(this.ctx, this.cam, this.gameTime, this.wall?.seed ?? 1);
+            drawBirds(this.ctx, this.gameTime);
+            this.wall?.draw(this.ctx, this.cam, this.debug);
+            this.updateHudInset();
+            this.player?.draw(this.ctx, this.cam, this.debug);
+            document.documentElement.dataset["zoom"] = String(this.cam.pixelScale);
+            this.cam.posX = easedX;
+            this.cam.posY = easedY;
         }
 
         // Update music player
         this.music.update();
 
-        this.drawWorldBounds();
-
         this.drawLoadingScreen(this.frame_delta!);
 
-        const debugInfo = "FPS: " + (1.0 / this.frame_delta_smoothed).toFixed(2);
         if (this.debugInfo !== null) {
-            setTextOfElement(this.debugInfo, debugInfo);
+            this.debugInfo.style.display = this.debug ? "block" : "none";
+            if (this.debug) {
+                setTextOfElement(this.debugInfo, "FPS: " + (1.0 / this.frame_delta_smoothed).toFixed(2));
+            }
         }
 
         const player = this.player;
@@ -432,40 +515,8 @@ export class Game {
                 setTextOfElement(this.altimeter_data, this.climbingMaxEndHeight.toFixed(2) + " m");
             }
         }
-    }
 
-    private drawWorldBounds(): void {
-        // left border
-        {
-            const leftBorderStart = this.canvas.width * 0.3;
-            const leftBorderEnd = leftBorderStart + 30;
-
-            const grd = this.ctx.createLinearGradient(leftBorderStart, 0, leftBorderEnd, 0);
-            grd.addColorStop(0, "rgba(0, 0, 0, 1.0)");
-            grd.addColorStop(1, "rgba(0, 0, 0, 0.0)");
-            this.ctx.fillStyle = grd;
-
-            this.ctx.beginPath();
-            this.ctx.rect(0, 0, leftBorderEnd, this.canvas.height);
-            this.ctx.closePath();
-            this.ctx.fill();
-        }
-
-        // right border
-        {
-            const rightBorderStart = this.canvas.width * 0.7;
-            const rightBorderEnd = rightBorderStart + 30;
-
-            const grd = this.ctx.createLinearGradient(rightBorderStart, 0, rightBorderEnd, 0);
-            grd.addColorStop(0, "rgba(0, 0, 0, 0.0)");
-            grd.addColorStop(1, "rgba(0, 0, 0, 1.0)");
-            this.ctx.fillStyle = grd;
-
-            this.ctx.beginPath();
-            this.ctx.rect(rightBorderStart, 0, this.canvas.width * 0.5, this.canvas.height);
-            this.ctx.closePath();
-            this.ctx.fill();
-        }
+        this.presenter.present();
     }
 
     private drawLoadingScreen(deltaTime: number): void {
@@ -499,11 +550,12 @@ export class Game {
         /*if (this.currentKeys[Game.KEY_S] || this.currentKeys[Game.KEY_Down]) {
             this.player.entity.velY += playerSpeed;
         }*/
-        if (this.currentKeys[Game.KEY_A] || this.currentKeys[Game.KEY_Left]) {
-            this.player?.addBowOffset(bowStrength * deltaTime);
-        }
-        if (this.currentKeys[Game.KEY_D] || this.currentKeys[Game.KEY_Right]) {
-            this.player?.addBowOffset(-bowStrength * deltaTime);
+        const leftHeld = this.currentKeys[Game.KEY_A] === true || this.currentKeys[Game.KEY_Left] === true;
+        const rightHeld = this.currentKeys[Game.KEY_D] === true || this.currentKeys[Game.KEY_Right] === true;
+        const lean = combinedLean(this.touchLean, leftHeld, rightHeld);
+        const bow = bowDeltaFromLean(lean, bowStrength, deltaTime);
+        if (bow !== 0) {
+            this.player?.addBowOffset(bow);
         }
 
         for (let k = 0; k < this.currentKeys.length; k++) {
@@ -512,18 +564,162 @@ export class Game {
     }
 
     private readMousePoint(ev: MouseEvent): { x: number; y: number } {
-        const mouseEvent = ev as MouseEvent & { layerX?: number; layerY?: number; offsetX?: number; offsetY?: number };
-        let x = 0;
-        let y = 0;
-        if (mouseEvent.layerX !== undefined) {
-            // Firefox
-            x = mouseEvent.layerX;
-            y = mouseEvent.layerY ?? 0;
-        } else if (mouseEvent.offsetX !== undefined) {
-            // Opera
-            x = mouseEvent.offsetX;
-            y = mouseEvent.offsetY ?? 0;
+        return this.pointerToLogical(ev.clientX, ev.clientY);
+    }
+
+    private pointerToLogical(clientX: number, clientY: number): { x: number; y: number } {
+        return clientToLogical(clientX, clientY, this.screen.getBoundingClientRect(), this.presenter.layout);
+    }
+
+    private applyViewport(): void {
+        const view = window.visualViewport;
+        const cssWidth = Math.round(view?.width ?? window.innerWidth);
+        const cssHeight = Math.round(view?.height ?? window.innerHeight);
+        const dpr = window.devicePixelRatio || 1;
+        const key = `${cssWidth}x${cssHeight}@${dpr}`;
+        if (key === this.viewportKey) {
+            return;
         }
-        return { x, y };
+        this.viewportKey = key;
+        this.presenter.resize(cssWidth, cssHeight, dpr);
+        this.ctx = this.presenter.logicalCtx;
+    }
+
+    private updateHudInset(): void {
+        const hud = document.getElementById("touch-hud");
+        const player = this.player;
+        if (player === undefined) {
+            return;
+        }
+        if (hud === null || getComputedStyle(hud).display === "none") {
+            player.exhaustion.hudInsetBottom = 8;
+            return;
+        }
+        const hudRect = hud.getBoundingClientRect();
+        const screenRect = this.screen.getBoundingClientRect();
+        const overlapCss = Math.max(0, screenRect.bottom - hudRect.top);
+        const overlapDevice = screenRect.height === 0 ? 0 : overlapCss * (this.presenter.layout.deviceHeight / screenRect.height);
+        player.exhaustion.hudInsetBottom = Math.max(8, Math.round(overlapDevice / this.presenter.layout.scale) + 4);
+    }
+
+    private touchOnControl(clientX: number, clientY: number): boolean {
+        const el = document.elementFromPoint(clientX, clientY);
+        if (el === null) {
+            return false;
+        }
+        return el.closest("#lean, #touch-actions, #controls, #helpoverlay") !== null;
+    }
+
+    private pictureTouches(touches: TouchList): Touch[] {
+        const picture: Touch[] = [];
+        for (let i = 0; i < touches.length; i++) {
+            const touch = touches[i];
+            if (touch !== undefined && !this.touchOnControl(touch.clientX, touch.clientY)) {
+                picture.push(touch);
+            }
+        }
+        return picture;
+    }
+
+    private updatePinch(touches: TouchList): void {
+        const pointers: PinchPointer[] = [];
+        for (let i = 0; i < touches.length; i++) {
+            const touch = touches[i];
+            if (touch === undefined) {
+                continue;
+            }
+            pointers.push({
+                x: touch.clientX,
+                y: touch.clientY,
+                onControl: this.touchOnControl(touch.clientX, touch.clientY),
+            });
+        }
+        const pair = freePinchPair(pointers);
+        if (pair === null) {
+            this.pinch = null;
+            return;
+        }
+        const distance = pinchDistance(pair[0], pair[1]);
+        if (this.pinch === null) {
+            this.pinch = { startDistance: Math.max(distance, 1), startScale: this.cam.scale_target };
+            return;
+        }
+        this.cam.scale_target = zoomFromPinch(this.pinch.startScale, this.pinch.startDistance, distance);
+    }
+
+    private armClimb(clientX: number, clientY: number): void {
+        this.cancelClimb();
+        this.climbPoint = this.pointerToLogical(clientX, clientY);
+        this.climbTimer = setTimeout(() => {
+            this.climbTimer = null;
+            this.flushClimb();
+        }, 160);
+    }
+
+    private flushClimb(): void {
+        if (this.climbTimer !== null) {
+            clearTimeout(this.climbTimer);
+            this.climbTimer = null;
+        }
+        const point = this.climbPoint;
+        this.climbPoint = null;
+        if (point === null || this.pinch !== null) {
+            return;
+        }
+        this.lastTouchClimbAt = performance.now();
+        this.click_at_point(point.x, point.y);
+    }
+
+    private cancelClimb(): void {
+        if (this.climbTimer !== null) {
+            clearTimeout(this.climbTimer);
+            this.climbTimer = null;
+        }
+        this.climbPoint = null;
+    }
+
+    private bindLeanPad(pad: HTMLElement): void {
+        const knob = document.getElementById("lean-knob");
+        const placeKnob = (): void => {
+            if (knob === null) {
+                return;
+            }
+            const t = (this.leanVisual + 1) / 2;
+            knob.style.left = `calc(${t} * (100% - 16px))`;
+        };
+        const read = (ev: PointerEvent): void => {
+            const rect = pad.getBoundingClientRect();
+            const reading = leanFromPointer(ev.clientX, rect.left, rect.width);
+            this.leanVisual = reading.visual;
+            this.touchLean = reading.lean;
+            placeKnob();
+        };
+        const end = (ev: PointerEvent): void => {
+            if (ev.pointerId !== this.leanPointerId) {
+                return;
+            }
+            this.leanPointerId = null;
+            this.leanVisual = 0;
+            this.touchLean = 0;
+            placeKnob();
+        };
+
+        pad.addEventListener("pointerdown", (ev) => {
+            if (this.leanPointerId !== null) {
+                return;
+            }
+            this.leanPointerId = ev.pointerId;
+            pad.setPointerCapture(ev.pointerId);
+            ev.preventDefault();
+            read(ev);
+        });
+        pad.addEventListener("pointermove", (ev) => {
+            if (ev.pointerId !== this.leanPointerId) {
+                return;
+            }
+            read(ev);
+        });
+        pad.addEventListener("pointerup", end);
+        pad.addEventListener("pointercancel", end);
     }
 }

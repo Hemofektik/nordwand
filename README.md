@@ -17,7 +17,19 @@ npm install
 npm run dev
 ```
 
-Then open [http://localhost:8000](http://localhost:8000). The canvas is 560×840, tall like the wall itself.
+Then open [http://localhost:8000](http://localhost:8000). The picture is the concept plate — about 420 pixels tall, the size of `bg_mountains` — scaled up by a whole number so every pixel stays square. On a phone that is a portrait view. Scrolling and pull-to-refresh are disabled. The page itself does not pinch-zoom; two fingers on the picture zoom the climb instead.
+
+The climber already moves by joint angles (see `concept/adr/0001-angular-only-motion.md`). A phone only needs the same two gestures the keyboard has: bow the body, and commit a move on the breath.
+
+| Touch | Action |
+| --- | --- |
+| **Lean** (bottom left) | Hold and drag. Right bows in toward the rock, left bows out. Same angular offset as **A** / **D**. |
+| **Climb** (bottom right) | Commit a move. Time it so the black breath ring sits on the white mark — a tight ring is a perfect move. Tapping the wall does this too. Same as **W**. |
+| **Let go** | Release every hold. Same as **F**. |
+| **Pinch** the picture | Zoom in or out by whole pixels. A thumb on the lean pad or the buttons is not part of the pinch. |
+| Top icons | Pause, new wall, mute, help. |
+
+The lean pad sits at the bottom left and the buttons at the bottom right. Both hide when the window is at least 1100px wide with a mouse, and come back on a narrower window, a tablet, a coarse pointer, or the first touch. Short and landscape screens shrink the pad so it stays on screen. Keyboard play is the same in every layout. The mouse wheel and a pinch zoom by whole logical pixels (1 to 10 world-pixels on a side). The window still picks the integer scale up to the screen.
 
 | Key | Action |
 | --- | --- |
@@ -28,8 +40,10 @@ Then open [http://localhost:8000](http://localhost:8000). The canvas is 560×840
 | **M** | Mute |
 | **N** | Next song |
 | **S** | Freeze physics (zero velocities) |
-| **D** | Toggle debug |
-| Mouse wheel | Zoom |
+| **D** | Toggle debug. Holding it also leans in, same as the right arrow. |
+| **A** / Left, **Right** | Lean out / lean in |
+| **W**, Up | Climb |
+| Mouse wheel | Zoom in (up) or out (down), in whole pixels |
 
 ## How it feels
 
@@ -63,7 +77,11 @@ src/
   Rope.ts          pixel rope
   Climber.ts       decision layer: phases, filter chain, stall ladder
   ClimberMotor.ts  motor layer: move API, IK, angle animation
-  Camera.ts        pixel-snapped world camera
+  Camera.ts        world camera (one world unit = one logical pixel)
+  pixelViewport.ts integer scale of that frame onto the screen
+  pixelScene.ts    sky, mountain plate, clouds, rock texture
+  pixelClimber.ts  pixel figure drawn from the ragdoll
+  touchInput.ts    lean pad, same bow as the A/D keys
   MusicPlayer.ts   songs and SFX
   PixelSprite.ts   nearest-neighbor scaled sprites
 public/            CSS, control icons, sprites
@@ -77,6 +95,8 @@ npm run build       # typecheck + Vite production build
 
 ## Concept
 
-The image at the top is `concept/nordwand_mockup_04_large.png` — the intended mood of the finished game. Wide sky, layered mountains, a textured wall, and a climber who looks small because the drop is real. The live prototype is still drawing debug bones and wall segments; the mockup is the north face those bones are trying to become.
+The image at the top is `concept/nordwand_mockup_04_large.png` — the intended mood of the finished game. Wide sky, layered mountains, a textured wall, and a climber who looks small because the drop is real.
+
+The live view follows that plate. The sky is a flat `#bad4ed`. Distant ridges are `public/sprites/bg_mountains.png`. Clouds are fixed pixel sprites (white, `#e5eaef` underside): small hand-authored puffs plus large and medium banks cut from the mockup, placed from the wall seed, flipped or scaled by a whole number, with the big clouds on a nearer parallax layer. The wall is a cached collage of rock stencils cut from that plate (and a lumpy patch from `tex_fels_01`), dithered into each other from the wall seed. Its silhouette is chosen once per world row from the collision line and baked into those chunks with the lip shading, the ledge moss, and the pitons, so scrolling the camera does not change which world pixel is the edge. The lip darkens from that snapped normal — overhang undersides more than faces turned toward the light — in palette steps. The climber is cached sprite parts (head, torso and pack, arm, glove, thigh, boot) on the ragdoll, in the mockup's own colours and without an outline. Joints sit on whole pixels and the head and the legs use sixteen fixed headings, so the picture does not shimmer. The shorts stay four pixels wide at every heading. The shin is a two-pixel khaki sock with a small boot. The torso stays the painted length (neck 11, hip 4). The arm reach is the original 20, searched at 19, so a move can still take a hold two anchors up; the drawn arm is scaled to that reach and stays at least about 25° from straight. The leg reach is 18, crouched at least about 80°, which is as far as the foot can plant on this torso without leaving the boot short of the grip. Limbs stretch by at most 15%. The rope still meets the pelvis. The rope is the dark brown `#2a0d03` line, with a metal piton on the same snapped edge. Everything is drawn into the logical frame, then scaled once with nearest-neighbour (`image-rendering: pixelated`, smoothing off). **D** still draws the debug bones and the anchor marks. `?poses=1` draws four still poses of the figure.
 
 Music in the original build: *sevenhundredbeats* by Duncan Beattie.

@@ -1,4 +1,6 @@
+import type { Camera } from "./Camera.ts";
 import { EGameState } from "./Core.ts";
+import { fillRing } from "./pixelDraw.ts";
 
 export class Exhaustion {
     public gameState: number;
@@ -12,6 +14,9 @@ export class Exhaustion {
     public lastInvalidMoveTime = -1000.0;
     public lastValidMoveTime = -1000.0;
     public lastValidMoveWasPerfect = false;
+
+    /** Logical pixels to keep clear at the bottom for the touch controls. */
+    public hudInsetBottom = 0;
 
     public constructor(gameState: number) {
         this.gameState = gameState;
@@ -50,55 +55,20 @@ export class Exhaustion {
         this.exhaustion = this.exhaustion * Math.pow(0.8, deltaTime);
     }
 
-    public draw(ctx: CanvasRenderingContext2D, _cam: import("./Camera.ts").Camera): void {
+    public draw(ctx: CanvasRenderingContext2D, _cam: Camera): void {
         if ((this.gameState & EGameState.Game) === 0) {
             return;
         }
 
-        const posX = ctx.canvas.width * 0.65;
-        const posY = ctx.canvas.height * 0.5;
+        // A small ring in the corner. It still crosses the white mark when
+        // respiration is 0 — the same moment tryMove() counts as perfect.
+        const unit = 4;
+        const posX = 16;
+        const posY = 40;
 
-        const outerRadius = 20.0;
-        const exhaustionRadius = (this.respiration * 0.1 + 1.15) * outerRadius;
+        fillRing(ctx, posX, posY, unit + 2, unit + 3, "#2a241f");
+        fillRing(ctx, posX, posY, unit - 0.2, unit + 0.6, "#ffffff");
 
-        // outer expiration circle
-        ctx.fillStyle = "#000000";
-        ctx.beginPath();
-        ctx.arc(posX, posY, exhaustionRadius * 2.0, 20, 1);
-        ctx.closePath();
-        ctx.fill();
-
-        // main background circle
-        ctx.beginPath();
-        ctx.fillStyle = "#CCCCCC";
-        ctx.arc(posX, posY, outerRadius * 2, 20, 1);
-        ctx.closePath();
-        ctx.fill();
-
-        // small center circle
-        ctx.fillStyle = "#000000";
-        ctx.beginPath();
-        ctx.arc(posX, posY, exhaustionRadius * 0.1, 20, 1);
-        ctx.closePath();
-        ctx.fill();
-
-        // valid move circle
-        ctx.strokeStyle = "#EEEEEE";
-        ctx.lineWidth = outerRadius * 0.75;
-        ctx.beginPath();
-        ctx.arc(posX, posY, outerRadius, 20, 1);
-        ctx.closePath();
-        ctx.stroke();
-
-        // perfect move circle
-        ctx.strokeStyle = "#FFFFFF";
-        ctx.lineWidth = outerRadius * 0.25;
-        ctx.beginPath();
-        ctx.arc(posX, posY, outerRadius, 20, 1);
-        ctx.closePath();
-        ctx.stroke();
-
-        // green valid move circle
         const validMoveAnimTime = 1.0;
         const lastValidMoveAnimTime = this.lastValidMoveTime - this.time + validMoveAnimTime;
         if (lastValidMoveAnimTime > 0.0) {
@@ -110,16 +80,10 @@ export class Exhaustion {
                 }
             }
 
-            ctx.strokeStyle = "#20FF20";
-            ctx.lineWidth = outerRadius * 0.75;
-            ctx.beginPath();
-            ctx.arc(posX, posY, outerRadius, 20, 1);
-            ctx.closePath();
-            ctx.stroke();
+            fillRing(ctx, posX, posY, unit - 2, unit + 2, "#20FF20");
             ctx.globalAlpha = 1.0;
         }
 
-        // red invalid move circle
         const lastInvalidMoveAnimTime = this.lastInvalidMoveTime - this.time + validMoveAnimTime;
         if (lastInvalidMoveAnimTime > 0.0) {
             ctx.globalAlpha = lastInvalidMoveAnimTime;
@@ -128,21 +92,11 @@ export class Exhaustion {
                 ctx.globalAlpha = 0.0;
             }
 
-            ctx.strokeStyle = "#FF2020";
-            ctx.lineWidth = outerRadius * 0.75;
-            ctx.beginPath();
-            ctx.arc(posX, posY, outerRadius, 20, 1);
-            ctx.closePath();
-            ctx.stroke();
+            fillRing(ctx, posX, posY, unit - 2, unit + 2, "#FF2020");
             ctx.globalAlpha = 1.0;
         }
 
-        // respiration circle
-        ctx.strokeStyle = "#000000";
-        ctx.lineWidth = 2.5 * (this.respiration + 1.0);
-        ctx.beginPath();
-        ctx.arc(posX, posY, outerRadius * (this.respiration + 1.0), 20, 1);
-        ctx.closePath();
-        ctx.stroke();
+        const breathR = unit * (this.respiration + 1.0);
+        fillRing(ctx, posX, posY, breathR - 1.25, breathR + 0.75, "#000000");
     }
 }

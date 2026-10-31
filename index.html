@@ -5,32 +5,35 @@
     <title>Nordwand</title>
     <link rel="stylesheet" type="text/css" href="/style.css">
     <link id="favicon" rel="icon" type="image/png" href="/logo.png" />
-    <meta name="viewport" content="width=360 , initial-scale=1, maximum-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+    <meta name="theme-color" content="#000000">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
 </head>
 
 <body>
     <div id="bgDiv">
         <div id="gameDiv">
             <canvas id="canvas">Sorry, no canvas for you!</canvas>
-            <ul id="controls">
-                <li id="help">
-                    <label>Help [H]</label>
-                </li>
-                <li id="pause">
-                    <label>Pause [P]</label>
-                </li>
-                <li id="newlevel">
-                    <label>New random level [R]</label>
-                </li>
-                <li id="mute">
-                    <label>Mute sounds [M]</label>
-                </li>
-            </ul>
             <div id="altimeter">
                 <div id="altimeter_data">
                     0.00 m
                 </div>
             </div>
+            <ul id="controls">
+                <li id="help" role="button" aria-label="Help" tabindex="0">
+                    <label>Help [H]</label>
+                </li>
+                <li id="pause" role="button" aria-label="Pause" tabindex="0">
+                    <label>Pause [P]</label>
+                </li>
+                <li id="newlevel" role="button" aria-label="New random level" tabindex="0">
+                    <label>New random level [R]</label>
+                </li>
+                <li id="mute" role="button" aria-label="Mute" tabindex="0">
+                    <label>Mute sounds [M]</label>
+                </li>
+            </ul>
             <div id="debugInfobBox">
                 <pre id="debuginfo"></pre>
             </div>
@@ -38,21 +41,49 @@
                 <div id="songtitle"></div>
                 <div id="songartist"></div>
             </div>
+            <div id="touch-hud">
+                <div id="lean" aria-label="Lean. Drag left to bow out, right to bow in toward the rock.">
+                    <span class="pad-caption">Lean</span>
+                    <span class="pad-side left">out</span>
+                    <span class="pad-side right">in</span>
+                    <div id="lean-knob"></div>
+                </div>
+                <div id="touch-actions">
+                    <button type="button" id="letgo">Let go</button>
+                    <button type="button" id="climb">Climb</button>
+                </div>
+            </div>
             <div id="pausedmessage" class="messages">
                 <p id="mainmessage">Paused</p>
-                <p id="subtext">Click here to resume playing.</p>
+                <p id="subtext">Tap here or press P to resume.</p>
             </div>
             <div id="deathmessage" class="messages">
                 <p id="mainmessage">You were consumed!</p>
-                <p id="subtext">Click here to restart the level.</p>
+                <p id="subtext">Tap here to start another wall.</p>
             </div>
             <div id="warningmessage" class="messages">
                 <p id="mainmessage">Uhhhhh.</p>
-                <p id="subtext">You may just wanna click here to restart the level.</p>
+                <p id="subtext">Tap here to start another wall.</p>
             </div>
             <div id="successmessage" class="messages">
                 <p id="mainmessage">Good!</p>
-                <p id="subtext">Click here to start another random level.</p>
+                <p id="subtext">Tap here to start another wall.</p>
+            </div>
+            <div id="helpoverlay">
+                <div id="helpwindow">
+                    <div id="helpbody">
+                        <h2>Nordwand</h2>
+                        <p>Bow the body, and climb when the black breath ring sits on the white mark. A tight ring is a perfect move.</p>
+                        <h3>Phone</h3>
+                        <p><b>Lean</b> — hold the pad. Right bows in toward the rock, left bows out into the air.</p>
+                        <p><b>Climb</b> — tap on the beat. Tapping the wall does the same thing.</p>
+                        <p><b>Let go</b> — release every hold. Only the rope is left.</p>
+                        <p><b>Pinch</b> — two fingers on the picture zoom in or out, one pixel at a time. Fingers on the pad or the buttons stay on those controls.</p>
+                        <h3>Keyboard</h3>
+                        <p>A / D or the arrow keys lean. W or Up climbs. F lets go. P pauses, R builds a new wall, M mutes, H is this help, N the next song. The mouse wheel zooms. The picture stays on the pixel grid; resizing the window picks a new whole-pixel scale.</p>
+                        <button type="button" id="helpclose">Close</button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

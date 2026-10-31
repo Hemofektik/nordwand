@@ -1,7 +1,14 @@
 import type { Camera } from "./Camera.ts";
 import type { SpringPhysics } from "./Physics.ts";
+import { snapScreen } from "./pixelDraw.ts";
+import { worldPitons, worldToScreen } from "./rockTexture.ts";
 import type { Skeleton } from "./Skeleton.ts";
 import type { Wall, WallAnchor } from "./Wall.ts";
+
+const ROPE = "#2a0d03";
+const PITON = "#b7bcc4";
+const PITON_DARK = "#4e545c";
+const PITON_HI = "#e7ebf0";
 
 function beginDrawPixelLine(ctx: CanvasRenderingContext2D, color: string): void {
     ctx.beginPath();
@@ -16,6 +23,7 @@ function drawPixelLine(
     x1: number,
     y1: number,
     invPixelScale: number,
+    screenOffsetX = 0,
 ): void {
     const dx = Math.abs(x1 - x0);
     const dy = -Math.abs(y1 - y0);
@@ -31,7 +39,7 @@ function drawPixelLine(
         const screenPosX = Math.round(cam.world_to_viewport_x_pixel(currentX) * invPixelScale) * cam.pixelScale;
         const screenPosY = Math.round(cam.world_to_viewport_y_pixel(currentY) * invPixelScale) * cam.pixelScale;
 
-        ctx.rect(screenPosX, screenPosY, cam.pixelScale, cam.pixelScale);
+        ctx.rect(screenPosX + screenOffsetX, screenPosY, cam.pixelScale, cam.pixelScale);
 
         e2 = 2 * err;
         if (e2 > dy) {
@@ -102,24 +110,74 @@ export class Rope {
     public draw(ctx: CanvasRenderingContext2D, cam: Camera): void {
         const invPixelScale = 1.0 / cam.pixelScale;
 
-        beginDrawPixelLine(ctx, "#2A0D03");
-        for (const constraintIndex of this.distanceConstraintIndices) {
-            const c = this.phys.distanceConstraints[constraintIndex]!;
+        const plot = (color: string, screenOffsetX: number): void => {
+            beginDrawPixelLine(ctx, color);
+            for (const constraintIndex of this.distanceConstraintIndices) {
+                const c = this.phys.distanceConstraints[constraintIndex]!;
 
-            const state0 = this.phys.particleStates[c.particleIndex0]!;
-            const state1 = this.phys.particleStates[c.particleIndex1]!;
+                const state0 = this.phys.particleStates[c.particleIndex0]!;
+                const state1 = this.phys.particleStates[c.particleIndex1]!;
 
-            drawPixelLine(
-                ctx,
-                cam,
-                Math.round(state0.posX),
-                Math.round(state0.posY),
-                Math.round(state1.posX),
-                Math.round(state1.posY),
-                invPixelScale,
-            );
+                drawPixelLine(
+                    ctx,
+                    cam,
+                    Math.round(state0.posX),
+                    Math.round(state0.posY),
+                    Math.round(state1.posX),
+                    Math.round(state1.posY),
+                    invPixelScale,
+                    screenOffsetX,
+                );
+            }
+            endDrawPixelLine(ctx);
+        };
+
+        plot(ROPE, 0);
+        this.drawPitons(ctx, cam);
+    }
+
+    /** Metal clips where the rope meets the rock. Drawn only; the constraints are unchanged. */
+    private drawPitons(ctx: CanvasRenderingContext2D, cam: Camera): void {
+        const s = Math.max(1, cam.pixelScale);
+        const screenOf = (worldX: number, worldY: number): { x: number; y: number } => ({
+            x: worldToScreen(worldX, cam.posX, cam.canvas.width, cam.pixelScale),
+            y: worldToScreen(worldY, cam.posY, cam.canvas.height, cam.pixelScale),
+        });
+        for (const piton of worldPitons(this.wall)) {
+            const p = screenOf(piton.x, piton.y);
+            ctx.fillStyle = PITON_DARK;
+            ctx.fillRect(p.x - s, p.y - 2 * s, s * 4, s * 4);
+            ctx.fillStyle = PITON;
+            ctx.fillRect(p.x, p.y - s, s * 3, s * 2);
+            ctx.fillStyle = PITON_HI;
+            ctx.fillRect(p.x + s, p.y - s, s, s);
+
+            let nearestX = piton.x;
+            let nearestY = piton.y;
+            let nearest = Number.POSITIVE_INFINITY;
+            for (const constraintIndex of this.distanceConstraintIndices) {
+                const constraint = this.phys.distanceConstraints[constraintIndex];
+                const state = constraint === undefined ? undefined : this.phys.particleStates[constraint.particleIndex0];
+                if (state === undefined) {
+                    continue;
+                }
+                const distance = Math.abs(state.posY - piton.y);
+                if (distance < nearest) {
+                    nearest = distance;
+                    nearestX = state.posX;
+                    nearestY = state.posY;
+                }
+            }
+            const rope = snapScreen(cam, nearestX, nearestY);
+            ctx.fillStyle = ROPE;
+            const dx = rope.x - p.x;
+            const dy = rope.y - p.y;
+            const steps = Math.max(Math.abs(dx), Math.abs(dy)) / s;
+            for (let n = 0; n <= steps; n++) {
+                const t = steps === 0 ? 0 : n / steps;
+                ctx.fillRect(Math.round(p.x + dx * t), Math.round(p.y + dy * t), s, s);
+            }
         }
-        endDrawPixelLine(ctx);
     }
 
     public lengthenEnd(): void {

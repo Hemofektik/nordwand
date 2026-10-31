@@ -65,15 +65,31 @@ function createBodyParticle(phys: SpringPhysics, posX: number, posY: number, mas
     return particleIndex;
 }
 
+/**
+ * Painted torso and leg. The arm is the original 20px reach: that is what
+ * let one move take a hold two or three anchors up. The drawn arm uses the
+ * same reach, so the hand still lands on the grip. The leg stays at the
+ * crouched painted length, which is enough for the footholds.
+ */
+export const PAINTED_NECK = 11;
+export const PAINTED_HIP = 4;
+export const PAINTED_BACK = 6;
+export const PAINTED_HEAD = 4;
+export const PAINTED_LEG_REACH = 14;
+export const ARM_REACH = 20;
+/** Long enough that a push lifts the body about as far as the old 24px leg. */
+export const LEG_REACH = 18;
+
 export class Skeleton {
     public phys: SpringPhysics = undefined as unknown as SpringPhysics;
     public wall: Wall = undefined as unknown as Wall;
 
     public time = 0;
 
-    public bodylength = 24;
-    public armlength = 20;
-    public leglength = 24;
+    /** Painted torso and leg. Arm reach is the original 20. */
+    public bodylength = PAINTED_NECK + PAINTED_HIP;
+    public armlength = ARM_REACH;
+    public leglength = LEG_REACH;
 
     public bodyConstraintIndices: number[] = [];
     public leftArmConstraintIndices: number[] = [];
@@ -175,17 +191,21 @@ export class Skeleton {
         // put skeleton at a position where the left wrist touches the selected anchor
         const armAnchorIndex = anchors[Math.round(anchors.length / 2)]!.index;
         const legAnchorIndex = armAnchorIndex - 8;
+        const neckLen = PAINTED_NECK;
+        const hipLen = PAINTED_HIP;
+        const backLen = PAINTED_BACK;
+        const headLen = PAINTED_HEAD;
         posX = this.wall.wallAnchors[armAnchorIndex]!.posX - this.armlength * 2.0; // x2 to get enough extra distance
-        posY = this.wall.wallAnchors[armAnchorIndex]!.posY + this.bodylength * 0.7;
+        posY = this.wall.wallAnchors[armAnchorIndex]!.posY + neckLen;
 
-        const buttocksPosY = posY + this.bodylength * 0.3;
-        const neckPosY = posY - this.bodylength * 0.7;
+        const buttocksPosY = posY + hipLen;
+        const neckPosY = posY - neckLen;
 
         const pelvisIndex = createBodyParticle(phys, posX, posY, bodyParticleMass);
         const buttocksIndex = createBodyParticle(phys, posX, buttocksPosY, bodyParticleMass);
-        const backIndex = createBodyParticle(phys, posX, posY - this.bodylength * 0.3, bodyParticleMass);
+        const backIndex = createBodyParticle(phys, posX, posY - backLen, bodyParticleMass);
         const neckIndex = createBodyParticle(phys, posX, neckPosY, bodyParticleMass);
-        const headIndex = createBodyParticle(phys, posX, posY - this.bodylength * 0.9, bodyParticleMass);
+        const headIndex = createBodyParticle(phys, posX, neckPosY - headLen, bodyParticleMass);
 
         this.pelvisParticleIndex = pelvisIndex;
         this.buttocksParticleIndex = buttocksIndex;
